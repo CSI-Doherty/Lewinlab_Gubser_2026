@@ -1,0 +1,122 @@
+---
+title: "07_Trajectories"
+author: "jibsch"
+date: "2023-02-03"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+## Introduction
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(slingshot)
+library(RColorBrewer)
+
+library(velocyto.R)
+library(SeuratWrappers)
+```
+
+```{r}
+merged4 <- readRDS("~/projects/Lewinlab_AMC_local/output/merged4.Rds")
+```
+
+
+```{r}
+sce <- slingshot(as.SingleCellExperiment(merged4), clusterLabels = 'seurat_clusters', reducedDim = 'HARMONY_UMAP')
+summary(sce$slingPseudotime_1)
+```
+```{r}
+library(grDevices)
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce$slingPseudotime_1, breaks=100)]
+
+plot(reducedDims(sce)$HARMONY_UMAP, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+```
+
+```{r}
+library(monocle3)
+library(SeuratWrappers)
+
+merged4 = RunUMAP(merged4, dims = 1:25, reduction = "harmony")
+
+merged4.cds <- as.cell_data_set(merged4)
+merged4.cds <- cluster_cells(cds = merged4.cds, reduction_method = "UMAP")
+merged4.cds <- learn_graph(merged4.cds, use_partition = TRUE)
+
+merged4.cds = order_cells(merged4.cds, reduction_method = "UMAP")
+
+# plot trajectories colored by pseudotime
+plot_cells(
+  cds = merged4.cds,
+  color_cells_by = "pseudotime",
+  show_trajectory_graph = TRUE
+)
+```
+
+## Expanded Only
+```{r}
+merged5 = merged4[,paste(merged4$TCR_alpha1, merged4$TCR_beta) %in% expanded_perdon$combination &
+                    merged4$response == "Response" & merged4$condition != "CD8 Tet+"]
+```
+```{r}
+sce <- slingshot(as.SingleCellExperiment(merged5), clusterLabels = 'celltype', 
+                 reducedDim = 'HARMONY_UMAP', start.clus = "TCM")
+summary(sce$slingPseudotime_1)
+
+library(grDevices)
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce$slingPseudotime_1, breaks=100)]
+
+pdf("../plots/slingshot_res.pdf", 4,4)
+plot(reducedDims(sce)$HARMONY_UMAP, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+dev.off()
+
+pdf("../plots/slingshot_nores.pdf", 4,4)
+plot(reducedDims(sce)$HARMONY_UMAP, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+dev.off()
+```
+```{r}
+library(monocle3)
+library(SeuratWrappers)
+
+merged4 = RunUMAP(merged4, dims = 1:25, reduction = "harmony")
+
+merged4.cds <- as.cell_data_set(merged4[,merged4$response == "Response" & merged4$expanded == "Expanded"])
+merged4.cds <- cluster_cells(cds = merged4.cds, reduction_method = "UMAP")
+merged4.cds <- learn_graph(merged4.cds, use_partition = TRUE)
+
+merged4.cds = order_cells(merged4.cds, reduction_method = "UMAP")
+
+# plot trajectories colored by pseudotime
+plot_cells(
+  cds = merged4.cds,
+  color_cells_by = "pseudotime",
+  show_trajectory_graph = TRUE
+)
+```
+
+
+```{r}
+library(monocle3)
+library(SeuratWrappers)
+
+
+merged4.cds.nores <- as.cell_data_set(merged4[,merged4$response != "Response" & merged4$condition!= "CD8 Tet+" & merged4$expanded == "Expanded"])
+merged4.cds.nores <- cluster_cells(cds = merged4.cds.nores, reduction_method = "UMAP")
+merged4.cds.nores <- learn_graph(merged4.cds.nores, use_partition = TRUE)
+
+merged4.cds.nores = order_cells(merged4.cds.nores, reduction_method = "UMAP")
+
+# plot trajectories colored by pseudotime
+plot_cells(
+  cds = merged4.cds.nores,
+  color_cells_by = "pseudotime",
+  show_trajectory_graph = TRUE
+)
+```

@@ -1,0 +1,278 @@
+---
+title: "01_QC"
+author: "jibsch"
+date: "2022-06-23"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+## Introduction
+
+```{r}
+library(Seurat)
+library(tidyverse)
+```
+
+```{r}
+hash = Read10X("../Sample2B_multi/outs/multi/count/raw_feature_bc_matrix/")
+
+multi = as.matrix(hash$`Multiplexing Capture`)
+
+multi = multi[,colSums(multi) > 10]
+```
+
+
+
+```{r}
+rowSums(multi)
+
+```
+```{r}
+t(multi) %>% as_tibble() %>% select(HTO_4, HTO_3) %>%
+  ggplot(aes(HTO_4, HTO_3)) + geom_point() + theme_classic() +
+  scale_x_continuous(trans = "log2") + scale_y_continuous(trans = "log2") 
+```
+```{r}
+library(GGally)
+
+ggpairs(data = as.data.frame(t(log2(multi) ))) + theme_classic()
+```
+
+## Vireo 1B
+
+```{r}
+dat = Read10X("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/cellranger_multi_data_take3/Sample_1B/outs/multi/count/raw_feature_bc_matrix/")
+
+vir = read.table("../vireo_sample_alignments.bam/donor_ids.tsv", header=T)
+
+summary(vir$cell %in% colnames(dat$`Antibody Capture`))
+
+comp = data.frame(donor = vir$donor_id) %>% cbind(t(as.matrix(dat$`Antibody Capture`[,vir$cell])))
+
+comp %>% pivot_longer(-donor) %>%
+  group_by(donor, name) %>%
+  summarise(m = mean(value)) %>%
+  ggplot(aes(donor, name)) +
+  geom_tile(aes(fill = m)) +
+  geom_text(aes(label = round(m))) +
+  theme_minimal()
+
+comp %>% pivot_longer(-donor) %>%
+  group_by(donor, name) %>%
+  summarise(m = mean(value)) -> pdat
+
+pdat %>% pivot_wider(names_from = "name", values_from = "m") %>%
+  column_to_rownames("donor") -> pdat
+
+pheatmap::pheatmap(pdat, scale = "row", display_numbers = T)
+```
+
+```{r}
+library(edgeR)
+comp_norm = t(comp[,-1])
+
+lib_size = colSums(comp[,-1])
+
+comp_norm = comp
+comp_norm[,2] = log2((comp_norm[,2] + 1) / lib_size[1])
+comp_norm[,3] = log2((comp_norm[,3] + 1) / lib_size[2])
+comp_norm[,4] = log2((comp_norm[,4] + 1) / lib_size[3])
+comp_norm[,5] = log2((comp_norm[,5] + 1) / lib_size[4])
+
+comp_norm %>% pivot_longer(-donor) %>%
+  group_by(donor, name) %>%
+  summarise(m = mean(value)) %>%
+  ggplot(aes(donor, name)) +
+  geom_tile(aes(fill = m)) +
+  geom_text(aes(label = round(m))) +
+  theme_minimal()
+
+
+
+
+comp_norm %>% pivot_longer(-donor) %>%
+  group_by(donor, name) %>%
+  summarise(m = mean(value)) -> pdat
+
+pdat %>% pivot_wider(names_from = "name", values_from = "m") %>%
+  column_to_rownames("donor") -> pdat
+
+pheatmap::pheatmap(pdat, scale = "row", display_numbers = T)
+```
+```{r}
+thresholds = c(4,3.5,3.5,2.5)
+comp %>% pivot_longer(-donor) %>%
+  mutate(value = log2(value + 1)) %>% 
+  ggplot(aes(value, ..count..)) +
+  geom_histogram() + facet_wrap(~name) + theme_minimal() +
+  geom_vline(data = data.frame(name = paste0("HTO_",1:4), x = thresholds), aes(xintercept = x), colour = "red")
+
+comp_binary = comp
+for(i in 1:4){
+  comp_binary[,i+1] = log2(comp[,i+1] + 1) > thresholds[i]
+}
+
+comp_binary %>% pivot_longer(-donor) %>%
+  group_by(donor, name) %>% summarise(c = sum(value)) %>%
+  ggplot(aes(name, donor)) +
+  geom_tile(aes(fill = c)) +
+  geom_text(aes(label = c)) + 
+  theme_minimal()
+```
+```{r}
+seu = CreateSeuratObject(dat$`Gene Expression`)
+seu[["ADT"]] = CreateAssayObject(dat$`Antibody Capture`)
+seu = seu[, rownames(seu@meta.data) %in% vir$cell]
+
+seu$percent.mt = PercentageFeatureSet(seu, pattern = "^MT-")
+
+seu@meta.data %>% as_tibble() %>%
+  ggplot(aes(nFeature_RNA, ..count..)) +
+  geom_histogram() + theme_classic() +
+  geom_vline(xintercept = c(1000, 2200))
+
+seu@meta.data %>% as_tibble() %>%
+  ggplot(aes(percent.mt, ..count..)) +
+  geom_histogram() + theme_classic() +
+  geom_vline(xintercept = 5)
+
+seu = seu[,seu$nFeature_RNA >=1000 & seu$nFeature_RNA <= 2200 & seu$percent.mt<=5]
+
+seu = NormalizeData(seu)
+seu = FindVariableFeatures(seu)
+
+varfeat = seu@assays$RNA@var.features
+varfeat = varfeat[!grepl("^TR[AB]", varfeat)]
+
+seu = ScaleData(seu)
+seu = RunPCA(seu, verbose= F, features = varfeat)
+seu = RunUMAP(seu, dims = 1:20)
+
+DimPlot(seu)
+
+rownames(vir) = vir$cell
+
+seu$donor = vir[rownames(seu@meta.data),]$donor
+
+DimPlot(seu, split.by = "donor")
+```
+```{r}
+seu = NormalizeData(seu, assay = "ADT", normalization.method = "CLR")
+
+VlnPlot(seu, features = c("HTO-1", "HTO-2", "HTO-3", "HTO-4"), ncol = 2)
+
+seu <- HTODemux(seu, assay = "ADT", positive.quantile = 0.99)
+
+table(seu$ADT_classification.global)
+
+table(seu$ADT_classification)
+
+table(seu$ADT_classification, seu$donor)
+
+VlnPlot(seu[, seu$donor == "donor3"], features = "HTO-2", group.by = "orig.ident") + 
+  VlnPlot(seu[, seu$donor != "donor3"], features = "HTO-2", group.by = "orig.ident")
+
+DimPlot(seu, group.by = "donor") + DimPlot(seu, group.by = "ADT_classification")
+```
+
+```{r}
+vir2 = read_tsv("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/vireosnp_output_merged/Sample_1B/donor_ids.tsv")
+rownames(vir2) = vir2$cell
+
+
+summary(vir$cell == vir2$cell)
+table(vir$donor_id, vir2$donor_id)
+
+seu$donor2 = vir2[rownames(seu@meta.data),]$donor_id
+```
+
+## Sample 2B
+
+```{r}
+dat = Read10X("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/cellranger_multi_data_take3/Sample_2B/outs/per_sample_outs/Sample_2B/count/sample_feature_bc_matrix/")
+vir = read_tsv("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/vireosnp_output_merged/Sample_2B/donor_ids.tsv")
+seu = CreateSeuratObject(dat$`Gene Expression`)
+seu[["ADT"]] = CreateAssayObject(dat$`Antibody Capture`)
+seu = seu[, rownames(seu@meta.data) %in% vir$cell]
+
+seu$percent.mt = PercentageFeatureSet(seu, pattern = "^MT-")
+
+seu@meta.data %>% as_tibble() %>%
+  ggplot(aes(nFeature_RNA, ..count..)) +
+  geom_histogram() + theme_classic() +
+  geom_vline(xintercept = c(800, 2000))
+
+seu@meta.data %>% as_tibble() %>%
+  ggplot(aes(percent.mt, ..count..)) +
+  geom_histogram() + theme_classic() +
+  geom_vline(xintercept = 6)
+
+seu = seu[,seu$nFeature_RNA >=800 & seu$nFeature_RNA <= 2000 & seu$percent.mt<=6]
+
+seu = NormalizeData(seu)
+seu = FindVariableFeatures(seu)
+
+varfeat = seu@assays$RNA@var.features
+varfeat = varfeat[!grepl("^TR[AB]", varfeat)]
+
+seu = ScaleData(seu)
+seu = RunPCA(seu, verbose= F, features = varfeat)
+seu = RunUMAP(seu, dims = 1:20)
+
+DimPlot(seu)
+
+rownames(vir) = vir$cell
+
+seu$donor = vir[rownames(seu@meta.data),]$donor_id
+
+DimPlot(seu, group.by = "donor")
+```
+```{r}
+seu = NormalizeData(seu, assay = "ADT", normalization.method = "CLR")
+
+VlnPlot(seu, features = c("HTO-1", "HTO-2", "HTO-3", "HTO-4"), ncol = 2)
+
+seu <- HTODemux(seu, assay = "ADT", positive.quantile = 0.999, init = 8, nsamples=8)
+
+table(seu$ADT_classification.global)
+
+table(seu$ADT_classification)
+
+table(seu$ADT_classification, seu$donor)
+```
+```{r}
+seu_filt = seu[,!seu$donor %in% c("donor3", "doublet", "unassigned") ]
+seu_filt = NormalizeData(seu_filt)
+seu_filt = FindVariableFeatures(seu_filt)
+
+varfeat = seu_filt@assays$RNA@var.features
+varfeat = varfeat[!grepl("^TR[AB]", varfeat)]
+
+seu_filt = ScaleData(seu_filt)
+seu_filt = RunPCA(seu_filt, verbose= F, features = varfeat)
+seu_filt = RunUMAP(seu_filt, dims = 1:20)
+
+DimPlot(seu_filt, group.by = "donor")
+
+seu_filt$sample = recode(seu_filt$donor, 
+                         "donor0" = "C01D+8",
+                         "donor1" = "C22D+1",
+                         "donor2" = "C04D+1",
+                         "donor4" = "Baseline",
+                         "donor5" = "Unknown",
+                         "donor6" = "C13D+1",
+                         "donor7" = "C04D+1",
+                         "donor8" = "C04D+1")
+
+DimPlot(seu_filt, group.by = "sample", label = T)
+```
+```{r}
+seu_filt = FindNeighbors(seu_filt, dims = 1:20)
+seu_filt = FindClusters(seu_filt, resolution = 1.8)
+DimPlot(seu_filt)
+
+markers = FindAllMarkers(seu_filt, only.pos = T)
+markers %>% group_by(cluster) %>% slice_head(n= 5)
+```
+

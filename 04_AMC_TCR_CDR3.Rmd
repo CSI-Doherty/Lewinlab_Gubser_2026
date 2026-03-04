@@ -1,0 +1,223 @@
+---
+title: "04_AMC_TCR_CDR3"
+author: "jibsch"
+date: "2023-07-07"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+## Introduction
+
+```{r}
+merged4 <- readRDS("~/projects/Lewinlab/Lewinlab_AMC_local/output/merged4.Rds")
+
+```
+
+```{r}
+merged4@meta.data %>%
+  as_tibble(rownames = "barcode") %>%
+  select(barcode, TCR_alpha1,  TCR_beta, condition, sample) %>%
+  left_join(tcr_chains %>% select(-TCR_alpha2, -V_alpha1, -J_alpha1, -C_alpha1, -V_beta, -J_beta, -C_beta), by = "barcode") -> x
+
+summary(!is.na(x$TCR_alpha1.x) & x$TCR_alpha1.x != x$TCR_alpha1.y)
+
+table(is.na(x$TCR_beta.x), is.na(x$TCR_beta.y))
+
+merged4$cdr3_alpha = x$cdr3_alpha1
+merged4$cdr3_beta = x$cdr3_beta
+merged4$combination = paste(x$cdr3_alpha1, x$cdr3_beta)
+```
+```{r}
+merged4@meta.data %>% as_tibble() %>% 
+  mutate(comb = paste(cdr3_alpha, cdr3_beta)) %>%
+  filter(!grepl("NA", comb)) %>%
+  group_by(comb) %>% count() %>% arrange(-n)
+```
+
+```{r}
+merged4@meta.data %>% as_tibble() %>% 
+  mutate(comb = paste(cdr3_alpha, cdr3_beta)) %>%
+  filter(condition != "Baseline" & condition != "CD8 Tet+") %>%
+  group_by(sample) %>% mutate(tot = n()) %>%
+  group_by(sample, comb) %>%
+  summarise(n = n(), f = n()/tot[1]) %>%
+  filter(!grepl("NA", comb) )-> dat
+
+ggplot(dat, aes(f, ..density..)) +
+  geom_density(aes(colour = sample)) +
+  scale_x_continuous( trans = "log") +
+  facet_wrap(~sample) +
+  geom_vline(xintercept = 0.02, linetype = "dashed") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) ->p;p
+
+ggsave(p, filename = "../plots/TCR_cutoff.pdf", width = 20, height = 10, units = "cm")
+```
+```{r}
+dat %>% filter(f > 0.02) -> expanded_perdon_cdr
+
+summary(merged4$expanded == "Expanded")
+summary(merged4$combination[merged4$expanded == "Expanded"] %in% expanded_perdon_cdr$comb)
+```
+
+```{r}
+merged4@meta.data %>% 
+  filter(condition != "CD8 Tet+") %>%
+  filter(condition != "Baseline") %>%
+  group_by(sample) %>% mutate(tot = n()) %>%
+  group_by(sample, combination, response) %>%
+  summarise(n = n(), alpha = TCR_alpha1[1], beta = TCR_beta[1], f = n()/tot[1]) %>%  arrange(-f) %>% filter(f > 0.02) %>% filter(!is.na(sample), ! grepl("NA", combination))-> expanded_perdon_cdr
+
+
+merged4$expanded = ifelse(merged4$combination %in% expanded_perdon_cdr$combination | paste(merged4$TCR_alpha2, merged4$TCR_beta) %in% expanded_perdon_cdr$combination, "Expanded", "Single")
+```
+
+```{r}
+library(abdiv)
+
+seu@meta.data %>% as_tibble() %>%
+  mutate(c = paste(cdr3_alpha, cdr3_beta)) %>%
+  filter(!grepl("NA",c)) %>%
+  group_by(sample, response,c , celltype, time) %>% count() %>%
+  group_by(sample, response, celltype, time ) %>% summarise(s = simpson(n), n = n()) %>%
+  filter(n>1, celltype %in% c("TCM", "TTM", "TPEX"), time %in% c("No dose", "Single dose")) %>%
+  mutate(celltype = factor(celltype, levels = c("TCM", "TTM", "TPEX")),
+         response = factor(recode(response, "No response"="nR", "Response"="R"), levels = c("R","nR")),
+         time = factor(recode(time, "No dose" = "B", "Single dose" = "S")))-> x
+
+ggplot(x, aes(response, s)) +
+  geom_bar(stat="identity", data = x %>% group_by(response, celltype, time) %>% summarise(s=mean(s)), aes(fill = response)) +
+  geom_point()+
+  facet_grid(time~celltype)+
+  scale_fill_manual(values = unname(colour_donors[c("Donor 56", "Donor 62")])) +
+  # scale_colour_manual(values = unname()) +
+  theme_classic() + theme(legend.position = "none") + 
+  labs(x = element_blank(), y = "Simpson's diversity") ->p;p
+
+ggsave(p, filename = "../plots/simpsons_diversity_BL_vs_S.pdf", width = 13, height = 10, units = "cm")
+```
+
+
+```{r}
+seu@meta.data %>% as_tibble() %>%
+  mutate(c = paste(cdr3_alpha, cdr3_beta)) %>%
+  filter(!grepl("NA",c)) %>%
+  group_by(sample,c , celltype, time) %>% count() %>%
+  group_by(sample, celltype, time ) %>% summarise(s = simpson(n), n = n()) %>%
+  filter(n>1) %>%
+  mutate(time = factor(recode(time, "No dose" = "B", "Single dose" = "S", "Multi dose" = "M"))) %>%
+  mutate(celltype = factor(celltype, levels = c("TCM", "TTM", "TPEX", "TEMRA", "TEM",  "TEX")))-> x
+
+ggplot(x, aes(time, s)) +
+  geom_bar(stat="identity", data = x %>% group_by( celltype, time) %>% summarise(s=mean(s)), aes(fill = celltype)) +
+  geom_point(aes())+
+  facet_wrap(~celltype)+
+  scale_fill_manual(values = colours) +
+  # scale_colour_manual(values = colour_donors) +
+  labs(y = "Simpson's diversity") +
+  theme_classic() ->p;p
+
+ggsave(p, filename = "../plots/simpsons_diversity_celltypes.pdf", width = 15, height = 12, units = "cm")
+```
+
+
+### HIV Specificity
+```{r}
+hiv_tcrs = read.csv("../data/HIV_TCR.csv")
+summary(grepl("[*]0[1-3]", hiv_tcrs$J))
+
+Vs = gsub("[*]0[1-3]$","", hiv_tcrs$V)
+Js = gsub("[*]0[1-3]$","", hiv_tcrs$J)
+CDR = hiv_tcrs$CDR3
+
+beta_simple = limma::strsplit2(expanded_perdon_cdr$beta, split = "_")
+summary(paste(Vs,Js) %in% paste(beta_simple[,1], beta_simple[,2]))
+summary(paste(beta_simple[,1], beta_simple[,2]) %in% paste(Vs,Js))
+
+b = as.data.frame(beta_simple)
+
+b$responder = paste(b[,1], b[,2], b[,3], sep = "_") %in% merged4$TCR_beta[merged4$response == "Response"]
+b$hiv = paste(b[,1], b[,2]) %in% paste(Vs,Js)
+b$nores = paste(b[,1], b[,2], b[,3], sep = "_") %in% merged4$TCR_beta[merged4$response == "No response"]
+
+total = union(paste(beta_simple[,1], beta_simple[,2]), paste(Vs,Js))
+
+exp = paste(beta_simple[,1], beta_simple[,2])
+exp = exp[!duplicated(exp)]
+hiv = paste(Vs, Js)
+hiv = hiv[!duplicated(hiv)]
+
+pdf("../plots/venn_hiv_specificty.pdf")
+limma::vennDiagram(data.frame(exp = total %in% exp,
+                       hiv_spec = total %in% hiv))
+dev.off()
+```
+
+## Diversity ratio
+```{r}
+library(abdiv)
+
+merged4@meta.data %>%
+  filter(condition != "CD8 Tet+") %>%
+  group_by(sample, time, combination) %>%
+  count() %>%
+  group_by(sample, time) %>%
+  summarise(s = simpson(n)) -> x
+
+merged4@meta.data %>%
+  filter(condition != "CD8 Tet+") %>%
+  group_by(sample, time) %>%
+  summarise(e = sum(expanded == "Expanded") / n(), responder = response[1]) %>%
+  left_join(x) -> pdat
+
+ggplot(pdat, aes(time, e)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~sample) +
+  geom_text(aes(label = round(s, 2), y = e + 0.1))
+
+pdat %>% group_by(sample, responder) %>% filter("No dose" %in% time) %>%
+  select(-s) %>%
+  pivot_wider(names_from = time, values_from = e) %>%
+  summarise(ratio_s = log2(`Single dose` / `No dose`), 
+            ratio_m = log2(`Multi dose` / `No dose`)) %>%
+  mutate(time = "No dose") %>%
+  left_join(pdat) -> x
+
+
+x %>% pivot_longer(cols = c(ratio_s, ratio_m)) %>%
+ggplot(  aes(s, value)) +
+  geom_point(aes(colour = sample) ) +
+  geom_abline(data = data.frame(intercept = c(-8.8113, -13.31), slope = c(9.4958, 15.11 ),
+                                responder = c("No response", "Response")),
+              aes(intercept = intercept, slope = slope))+
+  facet_wrap(responder~name) +
+  scale_color_manual(values = colour_donors) +
+  theme_classic()
+
+x %>% pivot_longer(cols = c(ratio_s, ratio_m)) %>%
+  mutate(sample = factor(sample, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",   "Donor 62", "Donor 64"))) %>%
+  mutate(name = recode(name, "ratio_s" = "Single dose", "ratio_m" = "Multi dose")) %>%
+  mutate(name = factor(name, levels = c("Single dose",  "Multi dose"))) %>%
+ggplot(  aes(s, value)) +
+  geom_point(aes(colour = sample) , size = 2) +
+  facet_wrap(~name) +
+  geom_abline(data = data.frame(intercept = c(-13.82, -12.602), slope = c(15.24, 14.074 ),
+                                name = factor(c("Single dose", "Multi dose"), 
+                                              levels = c("Single dose",  "Multi dose"))),
+              aes(intercept = intercept, slope = slope), linetype = "dashed") +
+  scale_color_manual(values = colour_donors) +
+  theme_classic() +
+  labs(y = "Expansion ratio over baseline", x = "Simpson's diversity",
+       color = "donor") -> p;p
+
+ggsave(p, filename = "../plots/simpsons_diversity_expansion_ratio.pdf", width = 16, height = 8, units = "cm")
+
+lmod3 = lm(x$ratio_m~x$s)
+lmod4 = lm(x$ratio_s~x$s)
+
+lmod1 = lm(x$ratio_m[x$responder == "No response"]~x$s[x$responder == "No response"])
+lmod2 = lm(x$ratio_m[x$responder != "No response"]~x$s[x$responder != "No response"])
+  
+```
+

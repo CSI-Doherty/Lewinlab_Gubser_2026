@@ -1,0 +1,946 @@
+---
+title: "99_plots"
+author: "jibsch"
+date: "2022-12-08"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+
+```{r}
+library(tidyverse)
+library(RColorBrewer)
+library(ggrepel)
+library(Seurat)
+source("~/tools/BioinfTools/Plotting_Functions.R")
+
+donor_mapping = c("Donor 38" = "P1", "Donor 41" = "P2", "Donor 49" = "P4",
+                  "Donor 56" = "P6", "Donor 62" = "P7", "Donor 64" = "P8")
+```
+
+```{r}
+colours = c("TEM"  = "#0478fa","TCM" =  "#d15821", "TPEX" ="#743013", "TTM" =  "#ecbd72",   "TEX" = "#042f66",  "TEMRA" =  "#65c8de")
+colour_donors = c(brewer.pal(n = 9, "BuGn")[c(6,7,9)], brewer.pal(n=9, "BuPu")[c(5,6,9)], "darkgrey", "black")
+names(colour_donors) = c("Donor 49", "Donor 56", "Donor 38", "Donor 41", "Donor 62", "Donor 64", "Donor 48", "Donor 54")
+```
+
+```{r}
+merged4$time = factor(ifelse(merged4$condition == "Baseline", "No dose", ifelse(
+    grepl("C01D", merged4$condition), "Single dose", "Multi dose")
+  ), levels = c("No dose", "Single dose", "Multi dose"))
+merged4$response = ifelse(merged4$sample %in% c("Donor 49", "Donor 56", "Donor 38"), "Response", "No response")
+merged4$response = factor(merged4$response, levels = c("Response", "No response"))
+
+merged4$cell_id = ifelse(merged4$celltype %in% c("TEM", "TEX", "TEMRA"), "Effector", "Memory")
+```
+
+
+## Demultiplexing
+```{r}
+donor_mapping2 = c(donor_mapping, "Donor 48" = "P3", "Donor 54" = "P5")
+table(merged4$HTO_classification, merged4$sample) %>% as.data.frame() %>% 
+  mutate(Var1 = factor(Var1), Var1 = relevel(Var1, "Negative")) %>%
+  mutate(Var2 = ifelse(grepl( "PBMC", Var2), as.character(gsub("PBMC ","",Var2)), donor_mapping2[Var2])) -> pdat
+  
+pdat %>% filter(startsWith(Var2, "P")) %>%
+  group_by(Var2) %>% filter(Freq == max(Freq)) -> highlight
+
+ggplot(pdat, aes(Var2, Var1)) + geom_tile(aes(fill = Freq), show.legend = F) +
+  geom_text(aes(label = Freq), colour = "white") +
+  geom_tile(data = highlight, colour = "orange", fill = NA, size = 2) +
+  labs(y="HTO combination", x=element_blank()) -> p;p
+
+ggsave(p, filename = "../plots/demultiplexing_table.pdf", width = 15, height = 10, units = "cm")
+```
+
+
+## UMAPs
+
+```{r}
+# DimPlot(merged4, reduction = "harmony_umap", group.by = "celltype", label = T) + 
+  
+Embeddings(merged4, reduction = "harmony_umap") %>% as_tibble() %>% 
+  mutate(celltype = merged4$celltype) -> dat
+
+ggplot(dat, aes(harmonyumap_1, harmonyumap_2)) +
+  geom_point(aes(colour = celltype)) +
+  geom_label(data = dat %>% group_by(celltype) %>% summarise(harmonyumap_1 = mean(harmonyumap_1), harmonyumap_2 = mean(harmonyumap_2)),
+                   aes(label = celltype), label.r = unit(0, "lines")) +
+  scale_color_manual(values = colours) +
+  theme_classic() + theme(legend.position = "none")-> p;p
+
+ggsave(p, filename = "../plots/UMAP_celltypes.pdf", width = 12, height = 12, units = "cm")
+```
+```{r}
+Embeddings(merged4, reduction = "harmony_umap") %>% as_tibble() %>% 
+  mutate(celltype = merged4$celltype) %>%
+  mutate(cell_id = ifelse(celltype %in% c("TEM", "TEX", "TEMRA"), "Effector", "Memory")) -> dat
+
+ggplot(dat, aes(harmonyumap_1, harmonyumap_2)) +
+  geom_point(aes(colour = cell_id)) +
+  geom_label(data = dat %>% group_by(cell_id) %>% summarise(harmonyumap_1 = mean(harmonyumap_1), harmonyumap_2 = mean(harmonyumap_2)),
+                   aes(label = cell_id), label.r = unit(0, "lines")) +
+  # scale_color_manual(values = colours) +
+  theme_classic() + theme(legend.position = "none")
+```
+
+## Cell Type Proportions
+```{r}
+
+merged4@meta.data %>% as_tibble() %>%
+  filter(condition != "CD8 Tet+") %>%
+  group_by(sample, condition) %>% mutate(tot=n()) %>%
+  group_by(sample, condition, celltype) %>% summarise(f = n()/tot[1]*100) %>%
+  ungroup() %>%
+  group_by(condition, celltype) %>% summarise(low = mean(f) - sd(f), hi = mean(f) + sd(f), f = mean(f)) %>%
+  filter(celltype == "TEX")
+
+merged4@meta.data %>% as_tibble() %>%
+  filter(condition != "CD8 Tet+") %>%
+  group_by(sample, condition) %>% mutate(tot=n()) %>%
+  group_by(sample, condition, celltype) %>% summarise(f = n()/tot[1]*100) %>%
+  ungroup() %>%
+  group_by(condition, celltype) %>% summarise(low = mean(f) - sd(f), hi = mean(f) + sd(f), f = mean(f)) %>%
+  ggplot(aes(condition, f)) +
+  geom_point(aes(colour = celltype), size = 3) +
+  geom_line(aes(colour=celltype, group = celltype), size = 1.5, show.legend = F) +
+  # geom_errorbar(aes(ymin = low, ymax = hi, colour = celltype)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_colour_manual(values = colours) +
+  labs(x = element_blank(), y = "celltype % at time-point") +
+  ggtitle("Celltype proportions over time") ->p;p
+
+ggsave(p, filename = "../plots/time_vs_celltypes_global.pdf", width = 13, height = 10, units = "cm")
+```
+```{r}
+merged4@meta.data %>% as_tibble() %>%
+  filter(condition != "CD8 Tet+") %>%
+  # filter(sample %in% c("Donor 38", "Donor 49", "Donor 56",
+  #                                           "Donor 41", "Donor 62", "Donor 64")) %>%
+  group_by(sample, condition) %>% mutate(tot=n()) %>%
+  group_by(sample, condition, celltype, response) %>% summarise(f = n()/tot[1]*100) %>%
+  ungroup() -> dat
+
+dat  %>% mutate(time = ifelse(condition == "Baseline", "No dose", ifelse(
+    grepl("C01D", condition), "Single dose", "Multi dose")
+  )) %>%
+  mutate(time = factor(time, levels = c("No dose", "Single dose", "Multi dose"))) %>%
+  group_by(time, sample, celltype) %>% summarise(f = mean(f), response = response[1]) %>%
+  mutate(sample = factor(sample, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",  "Donor 62", "Donor 64",
+                                            "Donor 48", "Donor 54"))) %>%
+  ungroup() %>%
+  mutate(response = ifelse(sample %in% c("Donor 48", "Donor 54"), "Unclassified", response)) %>%
+  mutate(response = factor(response, levels = c("Response", "No response", "Unclassified")))-> dat2
+
+
+dat2 %>% ungroup() %>% group_by(response, time, celltype) %>% summarise(m = median(f)) -> dat3
+
+ggplot(dat2, aes(time, f)) +
+   geom_bar(data = dat3, aes(y=m, fill = time),  stat= "identity") + 
+  geom_point(aes(colour = sample)) + geom_line(aes(group = sample, colour = sample)) +
+  # geom_line(data = dat4, aes(group = condition, y = m)) +
+  facet_grid(response~celltype) + theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_manual(values = colour_donors) +
+  scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  labs(y="% cells in celltype", x = element_blank()) ->p ; p
+
+ggsave(p, filename = "../plots/time_vs_celltypes.pdf", width = 20, height = 15, units = "cm")
+```
+```{r}
+
+merged4@meta.data %>% as_tibble() %>% filter(condition != "CD8 Tet+") %>%
+  group_by(sample, time) %>% mutate(tot = n()) %>%
+  group_by(sample, time, cell_id) %>% summarise(f = n()/tot[1] * 100, response = response[1]) -> dat6
+
+dat6%>% group_by(response, time, cell_id) %>% summarise(m = mean(f)) -> dat8
+  
+
+ggplot(dat6, aes(time, f)) +
+   geom_bar(data = dat8, aes(y=m), stat= "identity", fill = "lightgrey", colour = "lightgrey") + 
+  geom_point(aes(colour = sample), size = 2) + geom_line(aes(group = sample, colour = sample), size =1.5, show.legend = F) +
+  # geom_line(data = dat4, aes(group = condition, y = m)) +
+  facet_grid(cell_id~response) + theme_classic() +
+  scale_color_manual(values = colour_donors) +
+  labs(x = element_blank(), y = "Average % cells in cell type")
+```
+
+
+```{r}
+merged4$celltype = recode(merged4$seurat_clusters,
+                          "0" = "0 - EFF", "2" = "2 - GNLY EFF", "7" = "7 - KLR - EFF",
+                          "6" = "6 - ISG - EFF", "8" = "8 - GZMK - EFF", "4" = "4 - STEM",
+                          "3" = "3 - TTM", "1" = "1 - MEM1", "5" = "5 - MEM2", "9" = "9 - MEMISG")
+levels(merged4$celltype)
+merged4$celltype = factor(merged4$celltype, levels = levels(merged4$celltype)[c(1,3,8,7,9,5,4,2,6,10)])
+DimPlot(merged4, group.by = "celltype", reduction = "harmony_umap")
+```
+```{r}
+library(RColorBrewer)
+merged4@meta.data %>% as_tibble() %>%
+  filter(condition != "CD8 Tet+", expanded == "Expanded") %>%
+  mutate(p = donor_mapping[sample]) %>%
+  filter(!is.na(p)) %>%
+  count(p, celltype) %>%
+  group_by(p) %>% mutate(f = n/sum(n)) %>%
+  ggplot(aes(p, f)) + geom_bar(stat= "identity", aes(fill = celltype)) +
+  #scale_fill_manual(values = c(brewer.pal(5, "Blues"), brewer.pal(5, "Reds"))) +
+  theme_classic() + labs(x = element_blank(), y = "frequency", fill = element_blank()) ->p;p
+
+ggsave(p, filename = "../plots/frequencies_celltype_ETCR.pdf", width = 11, height = 9, units = "cm")
+```
+
+
+## Composition
+```{r}
+library(speckle)
+
+merged4@meta.data %>% as_tibble() %>% filter(condition != "CD8 Tet+", response == "Response", time %in% c("No dose", "Single dose")) -> dat
+dat$rep = paste(dat$sample, dat$condition)
+dat$time = factor(dat$time)
+propeller(sample = factor(dat$rep), clusters = factor(dat$celltype), group =  factor(dat$time))
+propeller(sample = factor(dat$rep), clusters = dat$seurat_clusters, group =  factor(dat$time))
+
+group_test = merged4$sample %in% names(donor_mapping) & merged4$time == "No dose"
+propeller(sample = factor(merged4$sample[group_test]), clusters = merged4$seurat_clusters[group_test], group = merged4$response2[group_test])
+
+subset = dat$sample %in% c("Donor 38", "Donor 49")
+propeller(sample = factor(dat$rep[!subset]), clusters = dat$seurat_clusters[!subset], group =  factor(dat$time[!subset]))
+
+
+merged4@meta.data %>% as_tibble() %>% filter(condition != "CD8 Tet+", response == "No response", time %in% c("No dose", "Single dose")) -> dat2
+dat2$rep = paste(dat2$sample, dat2$condition)
+dat2$time = factor(dat2$time)
+propeller(sample = factor(dat2$rep), clusters = factor(dat2$celltype), group =  factor(dat2$time))
+propeller(sample = factor(dat2$rep), clusters = dat2$seurat_clusters, group =  factor(dat2$time))
+```
+```{r}
+
+merged4@meta.data %>% as_tibble() %>%
+  filter(condition != "CD8 Tet+") %>%
+  group_by(sample, condition) %>% mutate(tot=n()) %>%
+  group_by(sample, condition, celltype, response) %>% summarise(f = n()/tot[1]*100) %>%
+  ungroup() %>%
+  ggplot(aes(condition, f)) +
+  geom_point(aes(colour = celltype), size = 3) +
+  geom_line(aes(colour=celltype, group = celltype), size = 1.5, show.legend = F) +
+  facet_wrap(response~sample, drop = T, ncol = 2) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_colour_manual(values = colours) +
+  labs(x = element_blank(), y = "celltype % at time-point") +
+  ggtitle("Celltype proportions over time") -> p; p
+
+ggsave(p, filename = "../plots/time_vs_celltypes_by_donor.pdf", width = 12, height = 18, units = "cm")
+```
+
+
+```{r}
+library(sccomp)
+merged4$rep = paste(merged4$sample, merged4$time)
+sccomp_result = 
+  merged4[,merged4$condition != "CD8 Tet+"] |>
+  sccomp_estimate( 
+    formula_composition = ~ time, 
+    .sample =  rep, 
+    .cell_group = seurat_clusters, 
+    cores = 1 
+  ) |> 
+  sccomp_remove_outliers(cores = 1, verbose = FALSE, max_sampling_iterations = 2000) |>
+  sccomp_test()
+
+sccomp_result |> 
+    sccomp_boxplot(factor = "time", significance_threshold = 0.1) ->p;p
+
+ggsave(p, filename = "../plots/sccomp_plot.pdf", width = 15, height = 15, units = "cm")
+```
+
+```{r}
+sccomp_result %>% filter(parameter != "(Intercept)") %>% select(seurat_clusters:c_FDR)
+```
+
+
+## CytoTRACE
+```{r}
+plotto_signature_scoring_plot("CytoTRACE", merged4, size = 1, reduction = "harmony_umap") ->p;p
+
+ggsave(p, filename = "../plots/UMAP_CytoTRACE.pdf", width = 12, height = 12, units = "cm")
+```
+
+
+
+```{r}
+
+
+leg <- ggpubr::get_legend(plotto_marker_plot("MYB", merged4, reduction = "harmony_umap", size = 1) + 
+                            theme(legend.position = "right") +
+                            labs(colour = element_blank()) + scale_colour_gradientn(breaks = c(0,1.386294), 
+                                                                                    colors = c("lightgrey", rev(brewer.pal(n = 11, name =
+                                                                    "Spectral")[1:5])), labels = c("low", "high")))
+
+# Convert to a ggplot and print
+ggpubr::as_ggplot(leg)
+
+ps = lapply(list("GZMB", "TOX", "LAG3", "CX3CR1", "IKZF2", "CCR7", "SELL", "CD27", "LEF1", "TCF7", "PRF1", "MX1", "MYB"), 
+                 function(x) plotto_marker_plot(x, merged4, reduction = "harmony_umap", size = 1) + ggtitle(x) + theme(legend.position = "none"))
+
+ps[["leg"]] = ggpubr::as_ggplot(leg)
+
+ggarrange(plots = ps, ncol = 4) -> p
+
+ggsave(p, filename = "../plots/markers_and_legend.pdf", width = 20, height = 20, units = "cm")
+
+```
+
+
+
+```{r}
+merged4 = SetIdent(merged4, value = "celltype")
+merged4$celltype = factor(merged4$celltype, levels = c("TCM", "TTM", "TPEX", "TEMRA", "TEM",  "TEX"))
+m = FindAllMarkers(merged4, only.pos = F, assay = "SCT")
+
+m %>% group_by(cluster) %>% 
+  filter(!grepl("^TR", gene) & !grepl("^HLA", gene) & !grepl("^RP", gene), avg_log2FC > 0) %>% slice_head(n = 12) %>%
+  mutate(cluster = factor(cluster, levels = c("TCM", "TTM", "TPEX", "TEMRA", "TEM",  "TEX"))) %>%
+  arrange(cluster) -> heat
+
+DoHeatmap(merged4, features = heat$gene, group.colors = colours, size = 4) + guides(colour = F) + theme(text = element_text(size = 10)) ->p;p
+
+ggsave(p, filename = "../plots/heatmap.celltypes.tiff", height = 20, width = 13, units = "cm")
+```
+
+## Effector Reponse
+```{r}
+m = FindMarkers(merged4, ident.1 = "Effector", ident.2 = "Memory", group.by = "cell_id")
+
+m = m[!grepl("^RP", row.names(m)) & !grepl("^TR",  row.names(m)) & !grepl("^HLA",  row.names(m)),]
+
+merged4 = AddModuleScore(merged4, features = list(up = row.names(m)[m$avg_log2FC > 0],
+                                          dn = row.names(m)[m$avg_log2FC < 0]))
+names(merged4@meta.data)[84:85] = c("Effector", "Memory")
+
+VlnPlot(merged4, features = c("Effector_vs_Memory"), group.by = "celltype", split.by = "response")
+```
+
+
+## Donor Response
+```{r}
+merged4$response2 = ifelse(merged4$sample == "Donor 56", "No response", merged4$response)
+merged4 = SetIdent(merged4, value = "seurat_clusters")
+seu = merged4[, merged4$condition != "CD8 Tet+" & !merged4$time == "No dose"]
+degs = lapply(as.list(0:9), function(x){
+  FindMarkers(seu, group.by = "response2", ident.1 = "Response", subset.ident = x) %>%
+    as_tibble(rownames = "gene") %>%
+    mutate(cluster = x)
+})
+lapply(degs, function(x) print(dim(x %>% filter(p_val_adj < 0.05))))
+
+degs2 = lapply(degs, function(x){
+  lookup = c("avg_log2FC", "p_val_adj")
+  names(lookup) = c(paste("logFC_cluster", x$cluster[1], sep = "_"),
+                    paste("FDR_cluster", x$cluster[1], sep = "_"))
+  x %>% select(gene, avg_log2FC, p_val_adj) %>%
+    # filter(p_val_adj < 0.05) %>%
+    rename(all_of(lookup))
+} )
+
+
+purrr::reduce(degs, rbind) %>% filter(gene == "MX1")
+
+degs3 = purrr::reduce(degs2, inner_join)
+
+degs3 %>% filter(!grepl("^TR[AB]", gene), !grepl("^RP", gene))
+```
+```{r}
+VlnPlot(seu, group.by = "seurat_clusters", split.by = "response2", "MX1")
+```
+
+
+## TCR expansion
+```{r}
+merged4@meta.data %>%
+  mutate(type = ifelse(condition == "CD8 Tet+", "Non cancer", "Cancer")) %>%
+  #filter(paste(merged2$TCR_alpha1, merged2$TCR_beta) %in% expanded$combination) %>% 
+  # group_by(celltype, type) %>% mutate(n = sum(paste(TCR_alpha1, TCR_beta) %in% expanded_perdon$combination)/n()) -> ndat
+group_by(celltype, type) %>% mutate(n = sum(expanded == "Expanded")/n()) -> ndat
+
+Embeddings(merged4, reduction = "harmony_umap") %>% as_tibble() %>%
+  mutate(n = ndat$n, type = ndat$type) %>%
+  filter(type == "Cancer") %>%
+  ggplot(aes(harmonyumap_1, harmonyumap_2)) +
+    geom_point(aes(colour = n * 100)) +
+    # scale_color_gradientn(colours = plotto_color_gradient_blue_red) +
+  scale_color_gradientn(colours = c("grey", brewer.pal(name = "Reds",11)[2:6]))+
+  theme_classic() +
+  geom_text(data = Embeddings(merged4, reduction = "harmony_umap") %>% as_tibble() %>%
+                    mutate(c = ndat$celltype, type = ndat$type) %>% group_by(c,type) %>% 
+              summarise(harmonyumap_1 = mean(harmonyumap_1), harmonyumap_2 = mean(harmonyumap_2)) %>%
+              filter(type == "Cancer"),
+            aes(label = c)) +
+  # facet_wrap(~type) +
+  labs(colour = "% expanded") ->p;p
+    
+
+ggsave(p, filename = "../plots/TCR_expansion_2pct_CDR3.pdf", width = 14, height = 10.5, units = "cm")
+```
+
+```{r}
+merged4@meta.data %>%
+  filter(sample %in% c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",  "Donor 62", "Donor 64")) %>%
+  group_by(sample, time) %>% mutate(tot = n()) %>%
+  mutate(combination = paste(TCR_alpha1, TCR_beta)) %>%
+  # filter(combination %in% expanded_perdon$combination) %>%
+  filter(expanded == "Expanded") %>%
+  filter(condition != "CD8 Tet+", !grepl("NA", combination)) %>%
+  mutate(sample = factor(sample, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",  "Donor 62", "Donor 64")),
+         response = factor(response, levels = c("Response", "No response"))) %>%
+  group_by(sample, time) %>%
+  summarise(n =n()/tot[1]*100, response = response[1]) -> dat
+  
+ggplot(dat,aes(time, n)) + 
+  geom_bar(data = dat %>% group_by(time, response) %>% summarise(m=median(n)), aes(y=m, fill = time), 
+           stat="identity") +
+  geom_point(aes(colour = sample)) + theme_classic() +
+  geom_line(aes(group = sample, colour = sample)) +
+  facet_wrap(~response, ncol = 2) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = element_blank(), y = "% of cells in expanded clones (>2%)") +
+  ggtitle("Clonotype expansion over time") +
+  scale_color_manual(values = colour_donors) +
+  scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) ->p;p
+
+ggsave(p, filename = "../plots/TCR_expansion_2pct_CDR3_time.pdf", width = 14, height = 9, units = "cm")
+```
+
+
+
+## Expanded clones DEGs
+
+```{r}
+sum(expanded_perdon$n)
+
+seu = merged4[,merged4$condition != "CD8 Tet+"]
+
+# seu$expanded = ifelse(paste(seu$TCR_alpha1, seu$TCR_beta) %in% expanded_perdon$combination, "Ex", "Single")
+# merged4$expanded = ifelse(paste(merged4$TCR_alpha1, merged4$TCR_beta) %in% expanded_perdon$combination, "Ex", "Single")
+
+m = FindMarkers(seu, ident.1 = "Expanded", group.by = "expanded")
+
+m %>% as_tibble(rownames = "gene") %>% filter(!grepl("^TR", gene) & !grepl("^HLA", gene) & !grepl("^RP", gene)) %>%
+  mutate(entrez = mapIds(org.Hs.eg.db, gene, "SYMBOL", column = "ENTREZID")) -> d
+
+topKEGG(kegga(de = d$entrez[d$avg_log2FC > 0 & d$p_val_adj < 0.05], species = "Hs"))
+
+write.csv(kegga(de = d$entrez[d$avg_log2FC > 0 & d$p_val_adj < 0.05], species = "Hs"), quote = F, file = "../output/dge_exp_vs_single_kegg.csv")
+
+topGO(goana(de = d$entrez[d$avg_log2FC > 0 & d$p_val_adj < 0.05], species = "Hs"))
+
+write.csv(goana(de = d$entrez[d$avg_log2FC > 0 & d$p_val_adj < 0.05], species = "Hs"), quote = F, file = "../output/dge_exp_vs_single_go.csv")
+```
+```{r}
+seu = SetIdent(seu, value = "seurat_clusters")
+degs = lapply(as.list(c(0,2:8)), 
+              function(x)FindMarkers(seu, ident.1 = "Expanded", group.by = "expanded", subset.ident = x) %>% 
+                as_tibble(rownames = "gene") %>% filter(!grepl("^TR", gene) & !grepl("^HLA", gene) & !grepl("^RP", gene)) %>%
+                mutate(cluster = x) %>%
+                filter(p_val_adj < 0.05))
+
+lapply(degs, function(x) print(dim(x)))
+```
+
+
+
+```{r}
+DoHeatmap(seu, features = c(d$gene[d$avg_log2FC>0], d$gene[d$avg_log2FC<0]), 
+          group.by = "expanded", group.colors = c("red", "grey")) +
+  theme(axis.text.y = element_text(size = 5)) +
+  scale_color_manual(values = c("red", "grey")) -> p;p
+
+
+ggsave(p, filename = "../plots/heatmap_expanded_tcr.tiff", width = 12, height = 15, units = "cm")
+```
+
+## TCR expansion Volcano
+```{r}
+d %>%
+  mutate(up = avg_log2FC > 0) %>%
+  ggplot(aes(avg_log2FC, -log10(p_val))) +
+  geom_point(aes(colour = up)) +
+  geom_text_repel(data = head(d, n=15), show.legend = F,
+                  aes(label = gene, colour = avg_log2FC > 0), point.padding = 25) +
+  theme_classic() +
+  scale_color_manual(values = c("blue", "red"), labels = c("Down", "Up")) +
+  theme(legend.position = c(0.15,0.15), legend.background = element_rect(colour = "black")) +
+  labs(colour = "DEGs") -> p;p
+
+ggsave(p, filename = "../plots/volcano_expanded_tcr.pdf", width = 12, height = 11, units = "cm")
+```
+
+## TCR Expanded Violin
+```{r}
+seu = AddModuleScore(seu, features = list(up = d$gene[d$avg_log2FC>0], down = d$gene[d$avg_log2FC<0]))
+names(seu@meta.data) = recode(names(seu@meta.data), "Cluster1" = "Up_Expanded", "Cluster2" = "Down_Expanded")
+
+VlnPlot(seu, features = "Up_Expanded", group.by = "seurat_clusters", split.by = "expanded", cols = c("red", "grey")) -> p;p
+
+ggplot(seu@meta.data, aes(seurat_clusters, Up_Expanded))+
+  geom_violin(aes(fill = expanded), position = "dodge")+
+  geom_point(data = seu@meta.data %>% filter(expanded == "Expanded"), aes(x=as.numeric(seurat_clusters)-0.225), position = position_jitter(width = 0.15), size = 0.5, alpha = 0.5)+
+  geom_point(data = seu@meta.data %>% filter(expanded != "Expanded", !seurat_clusters%in%c(1,9)), aes(x=as.numeric(seurat_clusters)+0.225),position = position_jitter(width = 0.15), size = 0.5, alpha = 0.5)+
+  geom_point(data = seu@meta.data %>% filter(expanded != "Expanded", seurat_clusters%in%c(1,9)), aes(x=as.numeric(seurat_clusters)),position = position_jitter(width = 0.3), size = 0.5, alpha = 0.5)+
+  theme_classic() +
+  scale_fill_manual(values = c("red", "grey"))->p;p
+
+ggsave(p, filename = "../plots/violin_expanded_tcr.pdf", width = 17, height = 10, units = "cm")
+```
+```{r}
+t.test(x = amc1$Up_Expanded[amc1$celltype == "TCM" & amc1$expanded == "Expanded"], y = amc1$Up_Expanded[amc1$celltype == "TCM" & amc1$expanded == "Single"], paired = F)
+
+tests = lapply(as.list(c(0,2:8)), function(c)  wilcox.test(x = seu$Up_Expanded[seu$seurat_clusters == c & seu$expanded == "Expanded"], y = seu$Up_Expanded[seu$seurat_clusters == c & seu$expanded == "Single"], paired = F))
+```
+
+
+## TCR Expansion KEGG/GO
+```{r}
+topKEGG(kegg <- kegga(de = d$entrez[d$avg_log2FC > 0], species = "Hs"))
+
+topGO(go <- goana(de = d$entrez[d$avg_log2FC > 0], species = "Hs"))
+```
+
+
+```{r}
+interest_k = kegg[kegg$Pathway %in% c("Antigen processing and presentation", "T cell receptor signaling pathway", 
+                                      "Apoptosis", "Primary immunodeficiency"),]
+interest_g = go[go$Term %in% c("cell activation", "immune response",
+                               "lymphocyte activation", "cell killing"),]
+
+names(interest_k)[1] = "Term"
+interest_k$type = "KEGG"
+interest_g$type = "GO"
+
+rbind(interest_k, interest_g[,-2]) %>%
+  ggplot(aes(Term, -log10(P.DE))) +
+  geom_bar(stat = "identity", aes(fill = -log10(P.DE)), colour = "black") +
+  theme_classic() +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  facet_wrap(~type, scales = "free", nrow = 2) +
+  coord_flip() +
+  xlab(element_blank()) +
+  scale_fill_gradientn(colours = plotto_color_gradient_blue_red) +
+  theme(legend.position = "none") +
+  labs(y = "-log10(p-value)")
+
+
+rbind(interest_k, interest_g[,-2]) %>%
+  mutate(Term = gsub('(.{1,20})(\\s|$)', '\\1\n', Term)) %>% 
+  ggplot(aes(reorder(Term,log10(P.DE)), -log10(P.DE))) +
+  geom_point( aes(size = DE/N), colour = "black") +
+  theme_classic() +
+  # geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  facet_wrap(~type, scales = "free", nrow = 2) +
+  coord_flip() +
+  xlab(element_blank()) +
+  scale_fill_gradientn(colours = plotto_color_gradient_blue_red) +
+ theme(legend.position = "top", legend.box.margin = margin(l=-100)) +
+  labs(y = "-log10(p-value)", size = "% DE") ->p;p
+
+ggsave(p, filename = "../plots/kegg_go_expanded_tcr.pdf", width = 10, height = 12, units = "cm")
+```
+
+## Dosage Heatmap
+
+```{r}
+m1 = FindMarkers(merged4, subset.ident = "TCM", group.by = "time", ident.1 = "Single dose", ident.2 = "No dose")
+m1 = m1[!grepl("^TR", rownames(m1)) & !grepl("^HLA", row.names(m1)) & !grepl("^RP", rownames(m1)),]
+
+
+DoHeatmap(merged4[,merged4$celltype == "TCM" & merged4$response == "Response" & merged4$condition != "CD8 Tet+"], features = c(row.names(m1)[m1$avg_log2FC>0], row.names(m1)[m1$avg_log2FC<0]), group.by = "time") + 
+  theme(legend.position = "none", axis.text.y = element_text(size = 7)) -> p1
+
+DoHeatmap(merged4[,merged4$celltype == "TCM" & merged4$response != "Response" & merged4$condition != "CD8 Tet+" & merged4$sample %in% c("Donor 41",  "Donor 62", "Donor 64")], features = c(row.names(m1)[m1$avg_log2FC>0], row.names(m1)[m1$avg_log2FC<0]), group.by = "time") + theme(legend.position = "none", axis.text.y = element_blank())-> p2
+
+DoHeatmap(merged4[,merged4$celltype == "TCM"  & merged4$condition != "CD8 Tet+" & 
+                    merged4$sample %in% c("Donor 48",  "Donor 54")], features = c(row.names(m1)[m1$avg_log2FC>0], row.names(m1)[m1$avg_log2FC<0]), group.by = "time") + theme(axis.text.y = element_blank()) -> p3
+
+ggsave(p1 + p2 +p3, filename = "../plots/heatmap_tcm_res_nores.tiff", height = 22, width = 16, units = "cm")
+```
+
+```{r}
+library(ggrepel)
+
+genes = c("STAT1", "MX1", "IRF7", "IRF9", "JUNB", "JUNC", "NFKB1", "NFKB2", "REL-B", "CD8b", 
+          "CXCR3", "CXCR4", "MYC", "PRDX1", "IL-32")
+genes = genes[genes %in% rownames(m1)]
+
+m1 %>% as_tibble(rownames = "gene") %>%
+  mutate(up = avg_log2FC > 0) %>%
+  ggplot(aes(avg_log2FC, -log10(p_val))) +
+  geom_point(aes(colour = up)) +
+  geom_text_repel(data = as_tibble(m1[genes,], rownames = "gene"), show.legend = F,
+                  aes(label = gene, colour = avg_log2FC > 0), point.padding = 25) +
+  theme_classic() +
+  scale_color_manual(values = c("blue", "red"), labels = c("Down", "Up")) +
+  theme(legend.position = c(0.15,0.85), legend.background = element_rect(colour = "black")) +
+  labs(colour = "DEGs") ->p;p
+
+ggsave(p, filename = "../plots/volcano_tcm.pdf", width = 12, height = 11, units = "cm")
+```
+
+
+```{r}
+library(org.Hs.eg.db)
+library(edgeR)
+m1 %>% as_tibble(rownames = "gene") %>% filter(avg_log2FC > 0) %>%
+  mutate(entrez = mapIds(org.Hs.eg.db, gene, "SYMBOL", column = "ENTREZID")) -> d
+  
+topKEGG(kegg <- kegga(de = d$entrez, species = "Hs"))
+topGO(go <- goana(de = d$entrez, species = "Hs"))
+```
+```{r}
+interest_k = kegg[kegg$Pathway %in% c("NOD-like receptor signaling pathway", "Human T-cell leukemia virus 1 infection", 
+                                      "Viral carcinogenesis", "Viral life cycle - HIV-1"),]
+interest_g = go[go$Term %in% c("response to cytokine", "type I interferon signaling pathway",
+                               "defense response to virus", "innate immune response"),]
+
+names(interest_k)[1] = "Term"
+interest_k$type = "KEGG"
+interest_g$type = "GO"
+
+rbind(interest_k, interest_g[,-2]) %>%
+  ggplot(aes(Term, -log10(P.DE))) +
+  geom_bar(stat = "identity", aes(fill = -log10(P.DE)), colour = "black") +
+  theme_classic() +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  facet_wrap(~type, scales = "free", nrow = 2) +
+  coord_flip() +
+  xlab(element_blank()) +
+  scale_fill_gradientn(colours = plotto_color_gradient_blue_red) +
+  theme(legend.position = "none") +
+  labs(y = "-log10(p-value)")
+
+
+rbind(interest_k, interest_g[,-2]) %>%
+  mutate(Term = gsub('(.{1,20})(\\s|$)', '\\1\n', Term)) %>% 
+  ggplot(aes(reorder(Term,log10(P.DE)), -log10(P.DE))) +
+  geom_point( aes(size = DE/N), colour = "black") +
+  theme_classic() +
+  # geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  facet_wrap(~type, scales = "free", nrow = 2) +
+  coord_flip() +
+  xlab(element_blank()) +
+  scale_fill_gradientn(colours = plotto_color_gradient_blue_red) +
+ theme(legend.position = "top", legend.box.margin = margin(l=-100)) +
+  labs(y = "-log10(p-value)", size = "% DE") ->p;p
+
+ggsave(p, filename = "../plots/kegg_go.pdf", width = 10, height = 12, units = "cm")
+```
+## Functional Data
+
+```{r}
+files = c("TEX1.csv", "TEX2.csv", "TEX3.csv", "IFNg.csv", "TNFa.csv")
+titles = c("TEX functional reading (CD8+PD1+GZMB+)", "TEX functional reading (CD8+PD1+GZMB+CD45RA+)",
+           "TEX functional reading (CD8+PD1+GZMB+CD62L-)", "IFNg functional reading (=live CD3+CD8+IFNg+)",
+           "TNFa functional reading (=live CD3+CD8+IFNg+)")
+ps = list()
+
+for(i in 1:length(files)) {
+  tex1 = read.csv(paste0("../data/", files[i]))
+  tex1 %>% pivot_longer(-donor) %>%
+    mutate(time = factor(ifelse(grepl("baseline", name), "No dose", 
+                       ifelse(grepl("C01", name), "Single dose", "Multi dose")),
+                       levels = c("No dose", "Single dose", "Multi dose"))) %>%
+    filter(!is.na(value)) %>%
+    filter(! donor %in% c("48", "54")) %>%
+    mutate(response = ifelse(donor %in% c("49", "56", "38"), "Response", "No response")) %>%
+    group_by(donor, time, response) %>% summarise(value = mean(value)) %>%
+    mutate(donor = paste("Donor", donor)) %>%
+    mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41", "Donor 48", "Donor 54", "Donor 62", "Donor 64")),
+         response = factor(response, levels = c("Response", "No response"))) -> tex1
+
+
+
+  ggplot(tex1,aes(time, value)) + 
+    geom_bar(data = tex1 %>% group_by(time, response) %>% summarise(m=median(value)), aes(y=m, fill = time), 
+             stat="identity", show.legend = F) +
+    geom_point() + theme_classic() +
+    geom_line(aes(group = donor, colour = donor)) +
+    facet_wrap(~response) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))  +
+    labs(x = element_blank(), y = "Functional readout") +
+    ggtitle(titles[i]) +
+    scale_color_manual(values = colour_donors) + scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) -> p
+  ps[[i]] = p
+}
+
+ggsave(ps[[3]], filename = "../plots/Functional_data_TEX3.pdf", width = 12, height = 9, units = "cm")
+ggsave(ps[[4]], filename = "../plots/Functional_data_IFNg.pdf", width = 12, height = 9, units = "cm")
+ggsave(ps[[5]], filename = "../plots/Functional_data_TNFa.pdf", width = 12, height = 9, units = "cm")
+```
+heatmap b split further by responders
+
+
+```{r}
+seu$res = paste(seu$response, seu$expanded)
+DoHeatmap(seu, features = c(d$gene[d$avg_log2FC>0], d$gene[d$avg_log2FC<0]), group.by = "res")
+
+```
+same in violin e
+```{r}
+VlnPlot(seu, features = c("Up_Expanded"), group.by = "celltype")
+```
+
+
+
+
+enrichment of expanded+responder in TCM?
+
+
+check baseline responders vs non-res for transcriptomic differences
+```{r}
+seu = SetIdent(seu, value = "condition")
+
+m_base_tcm = FindMarkers(seu[,seu$celltype == 'TCM'], ident.1 = "Response", group.by = "response", subset.ident = "Baseline")
+m_base_tcm = m_base_tcm[!grepl("^TR", rownames(m_base_tcm)) & !grepl("^HLA", row.names(m_base_tcm)) & !grepl("^RP", rownames(m_base_tcm)),]
+
+head(m_base_tcm)
+
+m_base_tcm %>% as_tibble(rownames = "gene") %>% filter(avg_log2FC > 0) %>%
+  mutate(entrez = mapIds(org.Hs.eg.db, gene, "SYMBOL", column = "ENTREZID")) -> d_base
+
+topKEGG(kegga(de = d_base$entrez, species = "Hs"))
+```
+
+## TCR Triangles
+
+```{r}
+
+library(stringr)
+library(tidyr)
+
+celltype_pairs <- function(vec) {
+  comb2 <- combn(vec, m=2, simplify = F)
+  paste(sapply(comb2, function(x) paste(x, collapse = "<->")), collapse = ',')
+}
+
+celltype_nums_match <- function(celltype_string, nums_string, match_val) {
+  split_cts <- limma::strsplit2(celltype_string, split = ",")
+  split_nums <- limma::strsplit2(nums_string, split = ",")
+  ct_idx <- which(split_cts == match_val)
+  if (length(ct_idx) == 0) {
+    return(NA)
+  }
+  else return(split_nums[ct_idx])
+}
+
+#the metas are expanded TCRs but not necessarily shared!
+
+merged4@meta.data %>%  as_tibble(rownames = 'cell') %>% 
+  filter(expanded == "Expanded", condition != "CD8 Tet+", response != "Response") %>% 
+left_join(as_tibble(Embeddings(merged4, reduction = 'harmony_umap'), rownames = 'cell')) %>% 
+  mutate(TCR_combination = paste(TCR_alpha1, TCR_beta)) %>%
+  group_by(TCR_combination,celltype) %>% summarise(n=n(), umap1 = mean(harmonyumap_1), umap2=mean(harmonyumap_2)) -> num_shares_per_celltype
+#10 gdT combos still here
+
+num_shares_per_celltype %>% ungroup() %>% select(TCR_combination, n, celltype) %>% group_by(TCR_combination) %>% mutate(n_comb = n(), celltypes = paste(celltype, collapse=',')) %>% mutate(celltypes_pairs = sapply(str_split(celltypes,','), function(x) ifelse(length(x) >1, celltype_pairs(x), x))) %>%  
+  mutate(celltype_nums = paste(n, collapse=',')) %>% #this now copies the num_cells for that combination in each celltype
+  filter(!duplicated(TCR_combination)) %>% ungroup() -> x
+#only 1 gdT in partial_collapse her now, but the connections are still present in celltypes_pairs
+
+
+cts = levels(factor(merged4$celltype))
+
+for(t1 in 1:5) {
+  for(t2 in (t1+1):6) {
+    forward_check = grepl(paste0('(^|,)',cts[t1], "<->",cts[t2],'($|,)'), x$celltypes_pairs) #finds individual celltype connections. This is where gdT disappears
+    backward_check = grepl(paste0('(^|,)',cts[t2], "<->",cts[t1],'($|,)'), x$celltypes_pairs)
+    #introduce opposite direction check. Use | operator (OR) to place T/F
+    x[,paste(cts[t1],cts[t2])] = forward_check | backward_check
+    
+  }
+  #the grepl here is the cause of filtering out shares. it's directional! Doesn't search for opposite arrow assignments
+}
+
+# x %>% select(-n, -partial_collapse, -n_comb, -celltypes_pairs) %>% pivot_longer(cols = 4:24) %>% 
+#   group_by(name) %>% 
+#   
+#   summarise(n = sum(value)) %>% #the n summary counts the number of TRUEs, so it is not considering strength of the connection 
+#   ungroup() %>% mutate(ct1 = limma::strsplit2(name, split = " ")[,1], ct2 = limma::strsplit2(name, split = " ")[,2]) %>%
+# 
+#  pivot_longer(cols = c("ct1","ct2"), names_to = "x", values_to = "celltype") -> z
+
+x %>% select(-n, -celltype, -n_comb, -celltypes_pairs) %>% pivot_longer(cols = 4:18) %>% filter(value == TRUE) %>%
+  mutate(ct1 = limma::strsplit2(name, split = " ")[,1], 
+         ct2 = limma::strsplit2(name, split = " ")[,2]) %>% group_by(name) %>% summarise(n = sum(value), celltypes = celltypes, celltype_nums = celltype_nums, ct1= ct1, ct2 = ct2) %>% #the n summary counts the number of TRUEs, so it is not considering strength of the connection
+ pivot_longer(cols = c("ct1","ct2"), names_to = "x", values_to = "celltype")  %>%
+rowwise()  %>% mutate(num_ct = celltype_nums_match(celltypes, celltype_nums, celltype )) %>% group_by(name, celltype_nums) %T>% {. ->> x_filtering}  %>% summarize(n_of_celltype = sum(as.integer(num_ct)), n = n, celltype = celltype, x=x) %>% distinct() -> z
+
+
+
+#mutate(ct1 = limma::strsplit2(name, split = " ")[,1], ct2 = limma::strsplit2(name, split = " ")[,2]) %>%
+#, celltypes = celltypes, celltype_nums = celltype_num 
+
+Embeddings(merged4, reduction = 'harmony_umap') %>% as_tibble() %>% mutate(celltype = merged4$celltype) %>% group_by(celltype) %>% summarise(umap1 = mean(harmonyumap_1), umap2 = mean(harmonyumap_2)) -> y
+
+z %>% left_join(y) %>% ungroup() %>%  mutate(norm = n/sum(n)) -> ldat
+
+# ggplot(ldat %>% filter(norm>0), aes(umap1, umap2))  + geom_line(aes(group = name, size = norm)) + geom_point(aes(color = celltype)) + #geom_ribbon(aes(ymin=umap2, xmin = umap1, ymax = n_of_celltype/100)) + 
+#   DimPlot(seu_breast, reduction = 'harmony_umap')
+
+#now just need to work out how to visualize
+Some further follow-ups
+
+Try different norm methods for this line plot just above
+
+#First try to just filter down the TCR connections. remove if they are spurious. (so removing TCR connections between clusters if one of the celltypes has just one cell)
+
+x_filtering %>% group_map( ~ {
+    if (1 %in% .x$num_ct) {
+      .x$dropped <- TRUE
+    } else {.x$dropped <- FALSE}
+  return(.x)
+}, .keep = T) %>% with(do.call(rbind,.)) %>% group_by(name) %T>% { summarise(., num_drop = sum(dropped)/2) ->> drop_table } %>%
+  left_join(., drop_table) %>% filter(dropped != TRUE) %>% mutate(n_without_single = n-num_drop) %>% group_by(name, celltype) %>%
+  summarize(n_of_celltype = sum(as.integer(num_ct)), n = n_without_single, celltype = celltype, x=x) %>% distinct() -> z_dropped
+
+
+z_dropped %>% full_join(y, ) %>% ungroup() %>%  mutate(norm = n/sum(n, na.rm = T)) -> ldat
+
+ggplot(ldat, aes(umap1, umap2))  + geom_line(aes(group = name, size = norm)) + geom_point(aes(color = celltype)) + #geom_ribbon(aes(ymin=umap2, xmin = umap1, ymax = n_of_celltype/100)) + 
+  DimPlot(merged4, reduction = 'harmony_umap') -> p2
+```
+### Responders
+```{r}
+e = ldat$name %>% gsub(" ","-", .)
+e = e[!duplicated(e)]
+
+g <- graph_from_literal(TCM-TEMRA,TCM-TEX,TCM-TPEX,TCM-TTM,TEM-TCM,TEM-TEMRA,TEM-TEX,TEM-TPEX,TEM-TTM,TEX-TEMRA,TPEX-TEMRA,TPEX-TEX,TPEX-TTM,TTM-TEMRA,TTM-TEX)
+g2 <- graph_from_literal(TCM-TEMRA,TCM-TEX,TCM-TPEX,TEM-TCM,TEM-TEMRA,TEM-TEX,TEM-TPEX,TEM-TTM,TEX-TEMRA,TPEX-TEMRA,TPEX-TEX,TTM-TEMRA,TTM-TEX)
+
+g2$layout = layout_in_circle
+
+ee = ldat[,c("name", "norm")]
+ee = ee[!duplicated(ee$name),]
+ee %>% mutate(row.names = gsub(" ","  --",name))%>% column_to_rownames("row.names") -> ee
+ee = ee[c("TCM  --TEMRA", "TCM  --TEX",   "TCM  --TPEX",  "TEM  --TCM" ,   "TEX  --TEMRA",   "TPEX  --TEMRA",  "TEM  --TEMRA",   "TTM  --TEMRA",   "TPEX  --TEX",  "TEM  --TEX", "TTM  --TEX",   "TEM  --TPEX",   "TEM  --TTM") ,]
+
+E(g2)$width = ee$norm * 100
+
+V(g2)$color = colours[c("TCM","TEMRA" ,"TEX" ,"TPEX","TEM","TTM")]
+
+V(g2)$size = 50
+V(g2)$label.color = "white"
+
+plot(g2)
+```
+
+### Non-Responders
+```{r}
+e = ldat$name %>% gsub(" ","-", .)
+e = e[!duplicated(e)]
+
+g <- graph_from_literal(TCM-TEMRA,TCM-TEX,TCM-TPEX,TCM-TTM,TEM-TCM,TEM-TEMRA,TEM-TEX,TEM-TPEX,TEM-TTM,TEX-TEMRA,TPEX-TEMRA,TPEX-TEX,TTM-TEMRA,TTM-TEX)
+
+g$layout = layout_in_circle
+
+ee = ldat[,c("name", "norm")]
+ee = ee[!duplicated(ee$name),]
+ee %>% mutate(row.names = gsub(" ","  --",name))%>% column_to_rownames("row.names") -> ee
+ee = ee[c("TCM  --TEMRA", "TCM  --TEX",   "TCM  --TPEX", "TCM  --TTM", "TEM  --TCM" ,   "TEX  --TEMRA",   "TPEX  --TEMRA", "TTM  --TEMRA",  "TEM  --TEMRA", "TPEX  --TEX", "TTM  --TEX",  "TEM  --TEX",  "TEM  --TPEX",        "TEM  --TTM") ,]
+
+E(g)$width = ee$norm * 1000
+
+V(g)$color = colours[c("TCM","TEMRA" ,"TEX" ,"TPEX","TTM","TEM")]
+
+V(g)$size = 50
+V(g)$label.color = "white"
+
+plot(g)
+```
+### TCR progression
+
+```{r}
+merged4@meta.data %>% as_tibble() %>%
+  filter(expanded == "Expanded", condition != "CD8 Tet+") %>%
+  mutate(celltype = factor(celltype, levels = c("TCM",  "TTM", "TPEX", "TEMRA", "TEM", "TEX"))) %>%
+  mutate(combination = paste(TCR_alpha1, TCR_beta)) %>%
+  group_by(combination, time, response) %>% summarise(ct = mean(as.numeric(celltype))) %>%
+  ungroup() %>%
+  mutate(time = factor(time, levels = c("No dose", "Single dose", "Multi dose"))) %>% 
+  mutate(response = factor(response, levels = c("Response", "No response"))) %>%
+  ggplot(aes(time, ct)) + 
+  geom_boxplot() + facet_wrap(~response)  +
+  geom_tile(data = data.frame(x= c("Single dose", "Single dose"),
+                              y = c(1,2,3,4,5,6), t = factor(c("TCM", "TTM", "TPEX", "TEMRA", "TEM", "TEX"),
+                                                             levels = c("TCM",  "TTM", "TPEX", "TEMRA", "TEM", "TEX"))), 
+            aes(x = x, y =y , fill = t), width = 3, height = 1) +
+  scale_fill_manual(values = colours) +
+  geom_boxplot(size = 2, outlier.size = 3, colour = "white") +
+  geom_boxplot(fill = "white", colour = "black") + theme_classic() +
+  scale_y_continuous(breaks = 1:6, labels = c("TCM",  "TTM", "TPEX", "TEMRA", "TEM", "TEX")) +
+  theme(legend.position = "none") +
+  labs(x = element_blank(), y = element_blank()) -> p;p
+
+ggsave(p, filename = "../plots/boxplot_tcr_expansion_response.pdf", width = 14, height = 11, units = "cm")
+```
+
+## Joined Expander Responder
+```{r}
+
+m_exp = FindMarkers(seu, subset.ident = "TCM", features = rownames(merged4), 
+                    ident.1 = "Expanded", group.by = "expanded", logfc.threshold = 0)
+m_res = FindMarkers(seu, subset.ident = "TCM", features = rownames(merged4), 
+                    ident.1 = "Response", group.by = "response", logfc.threshold = 0)
+
+as_tibble(m_exp, rownames = "gene") %>% full_join(as_tibble(m_res, rownames = "gene"), by = "gene") %>%
+  filter(!is.na(avg_log2FC.x) & !is.na(avg_log2FC.y))  %>% 
+  ggplot(aes(avg_log2FC.x, avg_log2FC.y)) + geom_point() +
+  geom_vline(xintercept = 0) + geom_hline(yintercept = 0) +
+  labs(x = "logFC expanders", y = "logFC responders") +
+  theme_bw() + geom_abline(slope = -0.2280911, colour = "blue") -> p;p
+
+ggsave(p, filename = "../plots/correlation_plot.pdf", width = 10, height = 10, units = "cm")
+```
+
+## TCR Sampling Bias
+```{r}
+merged4@meta.data %>%
+  as_tibble() %>%
+  count(sample, expanded, response) %>% 
+  group_by(sample) %>%
+  summarise(r = response[1], f = n[1]/sum(n)*100, n = sum(n)) %>%
+  filter(sample %in% c("Donor 38", "Donor 49", "Donor 56","Donor 41",  "Donor 62", "Donor 64")) %>%
+  mutate(sample = factor(sample, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",  "Donor 62", "Donor 64"))) -> pdat
+  
+summary(lm(pdat$f~pdat$n))
+
+ggplot(pdat, aes(n, f)) + geom_point(aes(colour = sample), size = 3) + 
+  theme_classic()+
+  scale_color_manual(values = colour_donors) +
+  geom_abline(intercept = 26.5, slope = 0.0063, linetype = "dashed") +
+  labs(x="number of cells per donor", y = "total expansion (%)")+
+  geom_text(aes(x=420, y=28, label = "linear fit: slope=0.006, p=0.9")) ->p;p
+
+ggsave(p, filename = "../plots/TCR_sampleing_bias.pdf", width = 15, height = 11, units = "cm")
+```
+
+## Hashtags Expression
+```{r}
+donor_mapping2 = c(donor_mapping, "Donor 48" = "P3", "Donor 54" = "P5")
+merged4@assays$HTO@data %>% as_tibble(rownames = "HTO") %>%
+  pivot_longer(-HTO) %>%
+  left_join(data.frame(name = row.names(merged4@meta.data), s = donor_mapping2[merged4$sample], l = merged4$orig.ident)) %>%
+  filter(l == "Sample_1B") %>%
+  ggplot(aes(s, value)) + geom_violin(aes(fill = s), show.legend = F) +
+  geom_point(position = "jitter", size = 0.1) +
+  facet_wrap(~HTO, nrow = 1) + theme_classic() +
+  labs(x = element_blank(), y = "Expression level")->p;p
+ggsave(p, filename = "../plots/hashtag_expression_lane1B.pdf", width = 18, height = 9, units = "cm")
+```
+

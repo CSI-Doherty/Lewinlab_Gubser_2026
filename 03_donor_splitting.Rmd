@@ -1,0 +1,83 @@
+---
+title: "03_donor_splitting"
+author: "jibsch"
+date: "2022-08-19"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+## Introduction
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(RColorBrewer)
+library(ggrepel)
+source("~/tools/BioinfTools/Plotting_Functions.R")
+merged3 <- readRDS("~/projects/Lewinlab_AMC_local/output/merged4.Rds")
+```
+
+```{r}
+split = SplitObject(merged3[,merged3$condition != "CD8 Tet+"], split.by = "sample")
+split = lapply(split, function(x){
+  DefaultAssay(x) = "RNA"
+  x = NormalizeData(x)
+  x = FindVariableFeatures(x)
+  x = ScaleData(x)
+  var = x@assays$RNA@var.features
+  var = var[!grepl("^TR[AB]", var)]
+  x = RunPCA(x, features = var)
+  x = RunUMAP(x, dims = 1:15)
+  x
+})
+
+split = lapply(split, function(x){
+  x$clusters_old = x$seurat_clusters
+  x = FindNeighbors(x, dims = 1:15)
+  x = FindClusters(x)
+  x
+})
+
+# split = lapply(split, function(x){
+#   x$celltype = merged3$celltype[merged3$sample== x$sample[1]]
+#   x
+# })
+
+```
+
+```{r}
+sigs = lapply(split, function(x){
+  ggarrange(plots = list(DimPlot(x, group.by = "condition", label = T),
+                         DimPlot(x, group.by = "celltype", label = T),
+                         DimPlot(x, label = T),
+                         plotto_signature_scoring_plot("Naive", x, size =1),
+                         plotto_signature_scoring_plot("Exhausted", x, size =1),
+                         plotto_signature_scoring_plot("Effector", x, size =1)
+                         ),nrow = 2)
+})
+```
+
+```{r}
+props = lapply(split, function(x){
+  x@meta.data %>% as_tibble() %>%
+    group_by(condition) %>% mutate(tot = n()) %>%
+    group_by(condition, celltype) %>% summarise(f = n()/tot[1]*100) %>%
+    ggplot(aes(condition, f)) +
+    geom_bar(stat="identity", aes(fill= celltype)) +
+    theme_classic() + 
+    labs(y = "% celltype")
+})
+```
+
+```{r}
+ps = lapply(split, function(x) {
+  DimPlot(x, cols = colours, label = T) + ggtitle(x$sample[1]) + theme(legend.position = "none")
+})
+
+leg = ggpubr::get_legend(DimPlot(split[[1]], cols = colours, label = T))
+ps[["leg"]] = ggpubr::as_ggplot(leg)
+
+ggsave(ggarrange(plots = ps), filename = "../plots/Split_donors.pdf", width = 20, height = 20, units = "cm")
+```
+

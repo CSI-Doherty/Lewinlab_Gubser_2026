@@ -1,0 +1,1065 @@
+---
+title: "02_vireo_global"
+author: "jibsch"
+date: "2022-06-30"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(RColorBrewer)
+library(ggrepel)
+source("~/tools/BioinfTools/Plotting_Functions.R")
+```
+
+```{r}
+merged <- readRDS("~/projects/Lewinlab_AMC/AMC/Analysis/output/data/2022-07-20_AMC_merged.rds")
+
+vireo = read_tsv("../mergeBams/vireo//donor_ids.tsv")
+vireo.01 = read_tsv("../mergeBams/vireo_0.01//donor_ids.tsv")
+vireo.05 = read_tsv("../mergeBams/vireo_0.05//donor_ids.tsv")
+vireo.005 = read_tsv("../mergeBams/vireo_0.005//donor_ids.tsv")
+vireo.0025 = read_tsv("../mergeBams/vireo_0.0025//donor_ids.tsv")
+vireo.001 = read_tsv("../mergeBams/vireo_0.001//donor_ids.tsv")
+
+vireo.01$cell = gsub("-1","",vireo.01$cell)
+row.names(vireo.01) = vireo.01$cell
+
+merged$donor_1pct = vireo.01[row.names(merged@meta.data),]$donor_id
+
+
+table(merged$donor_1pct, merged$orig.ident)
+
+table(merged$donor_new, merged$hashedDrops_classification)
+
+table(merged$donor_1pct, merged$HTO_classification)
+
+```
+## Sample 4A
+
+```{r}
+vir_local = read_tsv("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/vireosnp_output_merged/Sample_4A/donor_ids.tsv")
+head(vir_local)
+vir_local$cell = gsub("^","4A_",vir_local$cell)
+
+vir_local_3A = read_tsv("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/vireosnp_output_merged/Sample_3A/donor_ids.tsv")
+head(vir_local)
+vir_local_3A$cell = gsub("^","3A_",vir_local_3A$cell)
+
+vir_local_3B = read_tsv("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/vireosnp_output_merged/Sample_3B/donor_ids.tsv")
+head(vir_local)
+vir_local_3B$cell = gsub("^","3B_",vir_local_3B$cell)
+
+summary(vir_local$cell %in% vireo$cell)
+
+vireo.01 %>% inner_join(vir_local, by = "cell") -> x
+
+table(x$donor_id.x, x$donor_id.y)
+```
+
+```{r}
+lapply(list(vireo, vireo.01, vireo.05), function(x)table(x$donor_id))
+```
+```{r}
+calls = list(vireo,vireo.001, vireo.0025, vireo.005,vireo.01, vireo.05)
+names = c("MAF=0","MAF=0.1%", "MAF=0.25%","MAF=0.5%", "MAF=1%", "MAF=5%")
+names(calls) = names
+ps = list()
+for(i in 1:(length(calls)-1)){
+  for(j in (i+1):length(calls)){
+    data.frame(vireo_0 = calls[[i]]$donor_id, vireo_01 = calls[[j]]$donor_id) %>%
+    filter(!vireo_0 %in% c("doublet", "unassigned") & !vireo_01 %in% c("doublet", "unassigned")) %>%
+    group_by(vireo_0, vireo_01) %>% summarise(n = n()) %>%
+    #group_by(vireo_01) %>% 
+    ungroup() %>%
+   # group_by(vireo_0) %>%
+    mutate(r1 = min_rank(n)) %>% 
+    # ungroup() %>% group_by(vireo_01) %>%
+    # mutate(r2 = min_rank(n)) %>% head()
+    # 
+    #mutate(s = ifelse(n() > 1,scale(n)[r], 0.5)) %>% 
+    ggplot(aes(reorder(vireo_0,r1), reorder(vireo_01,r1))) +
+    geom_tile(aes(fill = log10(n))) +
+    geom_text(aes(label = n)) +
+    labs(x=names[i], y=names[j])+
+    theme_classic() +
+        theme(axis.text.x = element_text(angle=90, vjust  =0.5), legend.position = "none")-> p
+    ps[[paste(names[i],"vs",names[j])]] = p
+  }
+}
+
+
+ps2 = mapply(function(x,z){
+  x %>% inner_join(vir_local, by = "cell") %>%
+    group_by(donor_id.x, donor_id.y) %>% summarise(n = n())%>%
+    ungroup() %>% mutate(r=min_rank(n)) %>%
+    ggplot(aes(reorder(donor_id.x,r), reorder(donor_id.y,r))) +
+    geom_tile(aes(fill = log10(n))) +
+    geom_text(aes(label = n, color = n>15)) +
+    labs(x=z, y="Sample4A")+
+    theme_classic() +
+        theme(axis.text.x = element_text(angle=90, vjust  =0.5), legend.position = "none") +
+    scale_color_manual(values = c("white", "black"))
+}, calls, names, SIMPLIFY = F)
+
+ps3 = mapply(function(x,z){
+  x %>% inner_join(vir_local_3A, by = "cell") %>%
+    group_by(donor_id.x, donor_id.y) %>% summarise(n = n())%>%
+    ungroup() %>% mutate(r=min_rank(n)) %>%
+    ggplot(aes(reorder(donor_id.x,r), reorder(donor_id.y,r))) +
+    geom_tile(aes(fill = log10(n))) +
+    geom_text(aes(label = n, color = n>15)) +
+    labs(x=z, y="Sample3A")+
+    theme_classic() +
+        theme(axis.text.x = element_text(angle=90, vjust  =0.5), legend.position = "none") +
+    scale_color_manual(values = c("white", "black"))
+}, calls, names, SIMPLIFY = F)
+
+ps4 = mapply(function(x,z){
+  x %>% inner_join(vir_local_3B, by = "cell") %>%
+    group_by(donor_id.x, donor_id.y) %>% summarise(n = n())%>%
+    ungroup() %>% mutate(r=min_rank(n)) %>%
+    ggplot(aes(reorder(donor_id.x,r), reorder(donor_id.y,r))) +
+    geom_tile(aes(fill = log10(n))) +
+    geom_text(aes(label = n, color = n>15)) +
+    labs(x=z, y="Sample3B")+
+    theme_classic() +
+        theme(axis.text.x = element_text(angle=90, vjust  =0.5), legend.position = "none") +
+    scale_color_manual(values = c("white", "black"))
+}, calls, names, SIMPLIFY = F)
+
+```
+```{r}
+table(vireo.01$best_doublet[vireo.01$best_singlet == "donor3"])
+```
+
+##Compare Global and Local Assignments
+
+```{r}
+summary(merged$HTO_classification[merged$donor_1pct %in% paste0("donor",c(0,11,3,4,6))] != "Negative")
+table(merged$HTO_classification[merged$donor_1pct %in% paste0("donor",c(0,11,3,4,6))]) %>% as.data.frame() %>%
+  filter(Var1!= "Negative") %>% 
+  ggplot(aes(reorder(Var1, Freq), Freq)) + geom_bar(stat="identity") +
+  theme_classic() + labs(x= "#AB")
+```
+
+
+```{r}
+merged@meta.data %>% group_by( donor_1pct,HTO_classification) %>%
+  summarise(n=n()) %>%
+  mutate(r=min_rank(n)) %>%
+  ggplot(aes(donor_1pct, HTO_classification)) +
+  geom_tile(aes(fill = log10(n)))+
+  geom_text(aes(label=n, colour = n>30)) +
+  theme_classic() +
+   scale_color_manual(values = c("white", "black")) +
+  theme(legend.position = "none", axis.text.x = element_text(angle=90, vjust  =0.5))
+```
+
+
+```{r}
+merged@meta.data %>% group_by( donor_1pct,HTO_classification, orig.ident) %>%
+  summarise(n=n()) %>%
+  mutate(r=min_rank(n)) %>%
+  ggplot(aes(donor_1pct, HTO_classification)) +
+  geom_tile(aes(fill = log10(n)))+
+  geom_text(aes(label=n, colour = n>30)) +
+  theme_classic() +
+  facet_wrap(~orig.ident)+
+   scale_color_manual(values = c("white", "black")) +
+  theme(legend.position = "none", axis.text.x = element_text(angle=90, vjust  =0.5))
+```
+
+```{r}
+ps_1pct = lapply(list("1B", "2A", "2B", "3A", "3B", "4A"), function(x){
+  vir_local = read_tsv(paste0("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/vireosnp_output_merged/Sample_",x,"/donor_ids.tsv"))
+  vir_local$cell = gsub("^",paste0(x,"_"),vir_local$cell)
+  vir_local$cell = gsub("-1","",vir_local$cell)
+  head(vir_local)
+  vireo.01 %>% inner_join(vir_local, by = "cell") %>%
+    group_by(donor_id.x, donor_id.y) %>% summarise(n = n())%>%
+    ungroup() %>% mutate(r=min_rank(n)) %>%
+    ggplot(aes(reorder(donor_id.x,r), reorder(donor_id.y,r))) +
+    geom_tile(aes(fill = log10(n))) +
+    geom_text(aes(label = n, color = n>15)) +
+    labs(x="Global vireo (1% MAF)", y=paste0("Local vireo ",x," (10% MAF)"))+
+    theme_classic() +
+        theme(axis.text.x = element_text(angle=90, vjust  =0.5), legend.position = "none") +
+    scale_color_manual(values = c("white", "black"))
+})
+```
+```{r}
+vir_local_2B = read_tsv("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/vireosnp_output_merged/Sample_2B/donor_ids.tsv")
+vir_local_2B$cell = gsub("-1","",vir_local_2B$cell) %>% gsub("^", "2B_",.)
+row.names(vir_local_2B) = vir_local_2B$cell
+
+merged$donor_2B = vir_local_2B[row.names(merged@meta.data),]$donor_id
+
+
+merged@meta.data %>% filter(orig.ident == "Sample_2B") %>% group_by( donor_2B,HTO_classification) %>%
+  summarise(n=n()) %>%
+  mutate(r=min_rank(n)) %>%
+  ggplot(aes(donor_2B, HTO_classification)) +
+  geom_tile(aes(fill = log10(n)))+
+  geom_text(aes(label=n, colour = n>30)) +
+  theme_classic() +
+   scale_color_manual(values = c("white", "black")) +
+  theme(legend.position = "none", axis.text.x = element_text(angle=90, vjust  =0.5))
+```
+
+```{r}
+vir_local_3B = read_tsv("~/projects/Lewinlab_AMC/AMC/AMC_extractedData/vireosnp_output_merged/Sample_3B/donor_ids.tsv")
+vir_local_3B$cell = gsub("-1","",vir_local_3B$cell) %>% gsub("^", "3B_",.)
+row.names(vir_local_3B) = vir_local_3B$cell
+
+merged$donor_3B = vir_local_3B[row.names(merged@meta.data),]$donor_id
+
+
+merged@meta.data %>% filter(orig.ident == "Sample_3B") %>% group_by( donor_3B,HTO_classification) %>%
+  summarise(n=n()) %>%
+  mutate(r=min_rank(n)) %>%
+  ggplot(aes(donor_3B, HTO_classification)) +
+  geom_tile(aes(fill = log10(n)))+
+  geom_text(aes(label=n, colour = n>30)) +
+  theme_classic() +
+   scale_color_manual(values = c("white", "black")) +
+  theme(legend.position = "none", axis.text.x = element_text(angle=90, vjust  =0.5))
+```
+
+### New Comparison
+
+```{r}
+as.data.frame(table(merged$sample)) %>% mutate(Var1 = gsub(" ","_",Var1)) %>% inner_join(as.data.frame(table(merged2$Donor_ID_conservative)), by = "Var1") %>% pivot_longer(-Var1) %>% ggplot(aes(Var1, value)) + 
+  geom_bar(stat="identity", aes(fill = name), position= "dodge", colour = "black") + theme_classic() +
+  scale_fill_manual(labels = c("Hybrid global", "Conservative local"), values = RColorBrewer::brewer.pal(2, "Set2")) +
+  theme(legend.position = "top", axis.text.x = element_text(angle=45, hjust = 1)) +
+  labs(x = element_blank(), y = "# cells", fill = "Strategy:")
+
+as.data.frame(table(merged$sample)) %>% mutate(Var1 = gsub("Donor ","donor",Var1)) %>% inner_join(as.data.frame(table(merged2$latent_donor)), by = "Var1") %>% 
+  pivot_longer(-Var1) %>% filter(Var1 != "doublet") %>%
+  ggplot(aes(Var1, value)) + 
+  geom_bar(stat="identity", aes(fill = name), position= "dodge", colour = "black") + theme_classic() +
+  scale_fill_manual(labels = c("Hybrid global", "Conservative local"), values = RColorBrewer::brewer.pal(2, "Set1")) +
+  theme(legend.position = "top", axis.text.x = element_text(angle=45, hjust = 1)) +
+  labs(x = element_blank(), y = "# cells", fill = "Strategy:")
+
+as.data.frame(table(merged$sample)) %>% mutate(Var1 = gsub(" ","_",Var1)) %>% 
+  inner_join(as.data.frame(table(merged2$Donor_ID_conservative)), by = "Var1") %>% 
+  inner_join(as.data.frame(table(merged2$Donor_ID_HTOdemux_localSNP)), by = "Var1") %>% 
+  mutate(Var1 = gsub("Donor_","donor",Var1)) %>%
+  inner_join(as.data.frame(table(merged2$latent_donor)), by = "Var1") %>%
+  pivot_longer(-Var1) %>% ggplot(aes(Var1, value)) + 
+  geom_bar(stat="identity", aes(fill = name), position= "dodge", colour = "black") + theme_classic() +
+  scale_fill_manual(labels = c( "Hybrid global", "Local", "Conservative local", "Latent class"), values = RColorBrewer::brewer.pal(4, "Set2")) +
+  theme(legend.position = "top", axis.text.x = element_text(angle=45, hjust = 1)) +
+  labs(x = element_blank(), y = "# cells", fill = "Strategy:")
+
+```
+
+
+
+
+## Hybrid Assignment
+```{r}
+merged$donor_hybrid = merged$donor_1pct
+merged$donor_hybrid = ifelse(merged$donor_id_snp == "donor5" & merged$orig.ident == "Sample_4A", "donor90", merged$donor_hybrid)
+merged$donor_hybrid = ifelse(merged$donor_id_snp == "donor3" & merged$orig.ident == "Sample_4A", "donor3", merged$donor_hybrid)
+
+merged$sample = recode(merged$donor_hybrid,
+                       "donor0" = "PBMC C",
+                       "donor1" = "Donor 49",
+                       "donor3" = "PBMC D",
+                       "donor4" = "PBMC E",
+                       "donor5" = "Donor 38",
+                       "donor6" = "PBMC B",
+                       "donor7" = "Donor 54",
+                       "donor8" = "Donor 57",
+                       "donor9" = "Donor 48",
+                       "donor10" = "Donor 62",
+                       "donor11" = "PBMC F",
+                       "donor12" = "Donor 41",
+                       "donor13" = "Donor 64",
+                       "donor14" = "Donor 56",
+                       "donor90" = "PBMC G"
+                       )
+
+table(merged$sample)
+
+```
+
+
+```{r}
+assignment_table = read.table(text = "Sample 	Donor 38	Donor 41	Donor 48	Donor 49	Donor 54	Donor 56	Donor 62	Donor 64	Donor 57
+Sample_1B 	C01D+1 	NA 	C13D+1 	C01D+8 	C22D+1 	C01D+1 	Baseline 	C01D+8 	NA 
+Sample_2A 	C01D+8 	C04D-1 	C13D-1 	C04D-1 	C04D-1 	C01D+8 	C04D-1 	Baseline 	Baseline 
+Sample_2B 	C22D+1 	C13D+1 	C04D+1 	Baseline 	C04D+1 	C04D+1 	C01D+8 	C04D-1 	C01D+1 
+Sample_3A 	Baseline 	Baseline 	C22D+1 	C13D-1 	C13D+1 	C04D-1 	NA 	C01D+1 	C01D+8 
+Sample_3B 	NA 	C22D+1 	C04D+1 	C13D+1 	C13D-1 	Baseline 	C04D+1 	C04D+1 	C04D-1 
+Sample_4A 	C01D+8 (Donor41) 	C13D-1 	C04D+1 	C04D+1 	C04D+1 	Baseline 	C04D+1 	C04D+1 	C04D+1", sep = "\t", header= T)
+
+assignment_table %>% pivot_longer(-Sample, names_to = "sample", values_to = "condition") %>%
+  mutate(sample = gsub("[.]", " ", sample),
+         Sample = gsub(" $","",Sample),
+         condition = gsub(" $","", condition)) %>%
+  rename("orig.ident" = "Sample")-> assignments
+
+merged@meta.data %>% left_join(assignments) -> x
+x$condition = ifelse(grepl("PBMC", x$sample), "PBMC", x$condition)
+x$condition[x$condition == "NA"] = NA
+
+x$condition[x$orig.ident == "Sample_4A" & x$sample == "Donor 41" & x$HTO_classification == "HTO-1"] = "C01D+8"
+x$condition[x$orig.ident == "Sample_4A" & x$sample == "Donor 41" & !x$HTO_classification %in% c("HTO-1","HTO-2")] = NA
+x$condition[x$orig.ident == "Sample_1B" & x$sample == "Donor 41"] = "PBMC"
+
+table(x$orig.ident,x$condition)
+
+merged$condition = x$condition
+merged$sample[merged$orig.ident == "Sample_1B" & merged$sample == "Donor 41"] = "PBMC A"
+merged$condition[merged$orig.ident == "Sample_2A" & merged$sample == "PBMC D"] = NA
+
+DimPlot(merged, group.by = "condition", label = T)
+
+
+```
+### No PBMC
+```{r}
+merged2 = merged[,!is.na(merged$condition) ]
+merged2 = SCTransform(merged2)
+varfeatures = merged2@assays$SCT@var.features[!grepl("TR[AB]", merged2@assays$SCT@var.features)]
+merged2 = RunPCA(merged2, features = varfeatures)
+merged2 = RunUMAP(merged2, dims = 1:25)
+
+DimPlot(merged2, group.by = c("sample", "condition"), label = T)
+```
+```{r}
+merged3 = merged2[,merged2$condition != "PBMC"]
+merged3 = SCTransform(merged3)
+
+varfeatures = merged3@assays$SCT@var.features[!grepl("TR[AB]", merged3@assays$SCT@var.features)]
+merged3 = RunPCA(merged3, features = varfeatures)
+merged3 = RunUMAP(merged3, dims = 1:25)
+
+DimPlot(merged3, group.by = c("sample", "orig.ident", "condition"), label = T)
+
+merged3 = FindNeighbors(merged3, dims = 1:25)
+merged3 = FindClusters(merged3)
+DimPlot(merged3, label = T)
+```
+
+```{r}
+markers = FindAllMarkers(merged3, only.pos = F)
+
+write.csv(markers, "../output/markers_cd8s.csv", quote = F, row.names = F)
+
+markers %>% filter(cluster %in% c(7:9)) %>%
+  group_by(cluster) %>% slice_head(n=5)
+```
+```{r}
+library(org.Hs.eg.db)
+markers$entrez = mapIds(org.Hs.eg.db, markers$gene, "SYMBOL", column = "ENTREZID")
+keggs = lapply(split(markers$entrez, markers$cluster), function(x) kegga(species = "Hs", de = x))
+```
+
+### Signatures
+
+```{r}
+naive = list(plus = c("SELL", "TCF7", "CCR7", "IL17RA", "S1PR1", "KLF2"),
+             minus = c("KLRG1","CX3CR1","S1PR5","TNF","IFNG","GZMB","PRF1","MKI67","PDCD1", "HAVCR2", "CTLA4"))
+merged3 = AddModuleScore(merged3, features = naive)
+names(merged3@meta.data)[names(merged3@meta.data) == c("Cluster1", "Cluster2")] = c("Naive_pos", "Naive_neg")
+# merged3$Naive_neg = -merged3$Naive_neg
+merged3$Naive = scale(merged3$Naive_pos) - scale(merged3$Naive_neg)
+ggarrange(plots = list(plotto_signature_scoring_plot("Naive_pos", merged3, size = 1),
+                       plotto_signature_scoring_plot("Naive_neg", merged3, size =1),
+                       plotto_signature_scoring_plot("Naive", merged3, size =1)))
+```
+```{r}
+effector = list(plus =c("KLRG1", "CX3CR1", "S1PR5", "TNF", "IFNG", "GZMB", "PRF1"),
+                neg = c("SELL", "TCF7", "LEF1", "CCR7", "IL17RA"))
+
+merged3 = AddModuleScore(merged3, features = effector)
+names(merged3@meta.data)[c(length(names(merged3@meta.data)) -1, length(names(merged3@meta.data)))] = c("Effector_pos", "Effector_neg")
+merged3$Effector = scale(merged3$Effector_pos) - scale(merged3$Effector_neg)
+ggarrange(plots = list(plotto_signature_scoring_plot("Effector_pos", merged3, size = 1),
+                       plotto_signature_scoring_plot("Effector_neg", merged3, size =1),
+                       plotto_signature_scoring_plot("Effector", merged3, size =1)))
+```
+
+```{r}
+exhausted_int = list(pos = c("PDCD1","CTLA4","LAG3","CD160"),
+                     minus = c("TCF7", "HAVCR2"))
+merged3 = AddModuleScore(merged3, features = exhausted_int)
+names(merged3@meta.data)[c(length(names(merged3@meta.data)) -1, length(names(merged3@meta.data)))] = c("Exhausted_int_pos", "Exhausted_int_neg")
+merged3$Exhausted_int = scale(merged3$Exhausted_int_pos) - scale(merged3$Exhausted_int_neg)
+ggarrange(plots = list(plotto_signature_scoring_plot("Exhausted_int_pos", merged3, size = 1),
+                       plotto_signature_scoring_plot("Exhausted_int_neg", merged3, size =1),
+                       plotto_signature_scoring_plot("Exhausted_int", merged3, size =1)))
+```
+```{r}
+exhausted = list(plus = c("PDCD1", "HAVCR2", "LAG3", "TIGIT"),
+                 minus = c("SELL", "TCF7", "CCR7", "IL17RA", "S1PR1",  "KLF2"))
+
+merged3 = AddModuleScore(merged3, features = exhausted)
+names(merged3@meta.data)[c(length(names(merged3@meta.data)) -1, length(names(merged3@meta.data)))] = c("Exhausted_pos", "Exhausted_neg")
+merged3$Exhausted = scale(merged3$Exhausted_pos) - scale(merged3$Exhausted_neg)
+ggarrange(plots = list(plotto_signature_scoring_plot("Exhausted_pos", merged3, size = 1),
+                       plotto_signature_scoring_plot("Exhausted_neg", merged3, size =1),
+                       plotto_signature_scoring_plot("Exhausted", merged3, size =1)))
+```
+
+
+```{r}
+ifn_stim = list(plus = c("BST2", "IRF1", "IRF2", "IRF7", "STAT1", "STAT2", "MX1"))
+merged3 = AddModuleScore(merged3, features = ifn_stim)
+names(merged3@meta.data)[length(names(merged3@meta.data))] = "IFN_stimulated"
+
+plotto_signature_scoring_plot("IFN_stimulated", merged3, size =1)
+```
+```{r}
+trm = c("ITGAE","ITGA1", "CXCR6")
+merged3 = AddModuleScore(merged3, features = list(trm))
+names(merged3@meta.data)[length(names(merged3@meta.data))] = "TRM"
+plotto_signature_scoring_plot("TRM", merged3, size =1)
+```
+
+
+```{r}
+ggarrange(plots = list(plotto_marker_plot("TCF7", merged3, size = 1), plotto_marker_plot("HAVCR2", merged3, size = 1)))
+
+```
+
+
+```{r}
+VlnPlot(merged3, features = c("Naive", "IFN_stimulated", "Effector", "Exhausted"), group.by = "condition", ncol = 2)
+VlnPlot(merged3, features = c("Naive", "IFN_stimulated", "Effector", "Exhausted"),  ncol = 2)
+
+RidgePlot(merged3, features = c("Naive", "IFN_stimulated", "Effector", "Exhausted"), sort = T, ncol = 2)
+```
+
+```{r}
+# merged3$celltype = recode(merged3$seurat_clusters, 
+#                           "7" = "naive", "9" = "naive", "3" = "naive", "8" = "naive",
+#                           "0" = "effector", "2" = "effector", "6" = "effector", "10" = "effector",
+#                           "5" = "exhausted")
+
+merged3$celltype = recode(merged3$seurat_clusters, 
+                          "7" = "TCM", "9" = "PT_Naive?", "3" = "TCM", "8" = "PT_Naive_activted?",
+                          "0" = "Effector", "2" = "Effector", "6" = "Effector", "10" = "Effector",
+                          "4" = "TEM",
+                          "5" = "Exhausted")
+
+DimPlot(merged3, group.by = "celltype", label = T)
+```
+
+
+### Harmony Integration
+```{r}
+library(harmony)
+merged4 = RunHarmony(merged3, group.by.vars = "sample", dims.use = 1:30, plot_convergence = T, assay.use = "SCT")
+merged4 = FindNeighbors(merged4, reduction = "harmony", dims = 1:25)
+merged4 = RunUMAP(merged4, reduction = "harmony", dims = 1:25)
+
+DimPlot(merged4, group.by = "condition", label = T)
+```
+### Seurat Integration
+```{r}
+split = Seurat::SplitObject(merged3, split.by = "sample")
+
+split <- lapply(X = split, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = split)
+features = features[!grepl("TR[AB]", features)]
+
+immune.anchors <- FindIntegrationAnchors(object.list = split, anchor.features = features)
+# this command creates an 'integrated' data assay
+integrated_cd8s <- IntegrateData(anchorset = immune.anchors)
+
+DefaultAssay(integrated_cd8s) = "integrated"
+integrated_cd8s = ScaleData(integrated_cd8s)
+integrated_cd8s = RunPCA(integrated_cd8s)
+integrated_cd8s = RunUMAP(integrated_cd8s, dims = 1:25)
+
+DimPlot(integrated_cd8s, group.by = "condition", label = T)
+```
+
+
+### Only PBMC
+```{r}
+merged4 = merged[, merged$condition == "PBMC" ]#& merged$sample != "PBMC B"& merged$sample != "PBMC A"]
+merged4 = SCTransform(merged4)
+varfeatures = merged4@assays$SCT@var.features[!grepl("TR[AB]", merged4@assays$SCT@var.features)]
+merged4 = RunPCA(merged4, features = varfeatures)
+merged4 = RunUMAP(merged4, dims = 1:20)
+
+DimPlot(merged4, group.by = c("sample"), label = T)
+
+FeaturePlot(merged4, features = c("CD8A", "CD4", "CD27", "CD14"))
+```
+
+```{r}
+merged$expected_HTO_global = recode(merged$sample,
+                                    "Donor 38" = "HTO-1", "Donor 41" = "HTO-2", "Donor 48" = "HTO-3", "Donor 49" = "HTO-4",
+                                    "Donor 54" = "HTO-1_HTO-2", "Donor 56" = "HTO-2_HTO-3", "Donor 62" = "HTO-3_HTO-4",
+                                    "Donor 64" = "HTO-1_HTO-4", "Donor 57" = "HTO-2_HTO-4") 
+merged$expected_HTO_global[merged$orig.ident == "Sample_4A" & merged$sample == "Donor 41" & merged$HTO_classification == "HTO-1"] = "HTO-1"
+
+
+subset = grepl("HTO",merged$expected_HTO_global)
+
+summary(merged$HTO_classification[subset] == merged$expected_HTO_global[subset])
+
+summary(merged$HTO_classification[subset] %in% c(merged$expected_HTO_global[subset], rep("Negative", 11426) ) )
+
+conc = 0
+disc = 0
+for(c in rownames(merged@meta.data)[subset]){
+  if(merged$HTO_classification[c] %in% c(merged$expected_HTO_global[c], "Negative", strsplit(merged$expected_HTO_global[c], "_")[[1]]))
+    conc = conc + 1
+  else
+    disc = disc + 1
+}
+```
+
+
+```{r}
+merged$expected_HTO_local = recode(merged$Donor_ID,
+                                    "Donor_38" = "HTO-1", "Donor_41" = "HTO-2", "Donor_48" = "HTO-3", "Donor_49" = "HTO-4",
+                                    "Donor_54" = "HTO-1_HTO-2", "Donor_56" = "HTO-2_HTO-3", "Donor_62" = "HTO-3_HTO-4",
+                                    "Donor_64" = "HTO-1_HTO-4", "Donor_57" = "HTO-2_HTO-4") 
+merged$expected_HTO_local[merged$orig.ident == "Sample_4A" & merged$Donor_ID == "Donor_41" & merged$HTO_classification == "HTO-1"] = "HTO-1"
+
+
+subset = grepl("HTO",merged$expected_HTO_local)
+
+
+conc2 = 0
+disc2 = 0
+for(c in rownames(merged@meta.data)[subset]){
+  if(merged$HTO_classification[c] %in% c(merged$expected_HTO_local[c], "Negative", strsplit(merged$expected_HTO_local[c], "_")[[1]]))
+    conc2 = conc2 + 1
+  else
+    disc2 = disc2 + 1
+}
+```
+
+## Indiviudal Donors
+
+```{r}
+donors = lapply(as.list(levels(factor(merged3$sample))), function(x){ 
+  Don = merged3[,merged3$sample == x]
+  Don = SCTransform(Don)
+  varfeatures = Don@assays$SCT@var.features[!grepl("TR[AB]", Don@assays$SCT@var.features)]
+  Don = RunPCA(Don, verbose = F, features = varfeatures)
+  Don = RunUMAP(Don, dims=1:15)
+  Don
+})
+```
+
+
+```{r}
+donors[[7]] = FindNeighbors(donors[[7]], dims=1:15)
+donors[[7]] = FindClusters(donors[[7]])
+DimPlot(donors[[7]])
+m7 = FindAllMarkers(donors[[7]], only.pos = T)
+m7 %>% group_by(cluster) %>% slice_head(n=5)
+FeaturePlot(donors[[7]], features = c("KLRC2", "LTB","CD8A", "SRGN")) & scale_color_gradientn(colours = brewer.pal(9, "YlGn"))
+```
+```{r}
+saveRDS(donors, "../output/donors.Rds")
+```
+
+
+## Pseudo Bulk
+
+```{r}
+library(edgeR)
+s = levels(factor(paste(merged2$orig.ident, merged2$sample, merged2$condition)))
+
+bulks = lapply(as.list(s), function(x) {
+  b = rowSums(as.matrix(merged2@assays$RNA@counts[,paste(merged2$orig.ident, merged2$sample, merged2$condition) == x]))
+})
+names(bulks) = s
+
+b = reduce(bulks, cbind)
+colnames(b) = s
+
+dge = DGEList(b)
+
+dge$samples$group = factor(gsub("Sample_[1-4][AB] ","",rownames(dge$samples)) %>% gsub(" PBMC$","",.))
+dge$samples$donor = factor(ifelse(grepl("Donor", dge$samples$group), substr(dge$samples$group, 1, 8), as.character(dge$samples$group)))
+dge$samples$condition = factor(gsub("Donor [0-9]* ","", dge$samples$group) %>% gsub(" [A-G]$","", .))
+dge$samples$run = factor(substr(rownames(dge$samples), 1, 9))
+
+dge = dge[filterByExpr(dge),]
+dge = calcNormFactors(dge)
+```
+
+```{r}
+cpm = cpm(dge, log=T)
+cpm = cpm[!grepl("TR[AB]", rownames(cpm)),]
+pca = prcomp(t(cpm))
+
+pca$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge$samples$donor, condition = dge$samples$condition) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = donor))+
+  theme_classic()
+```
+```{r}
+# We filter PBMC B because it's so different.
+# We further filter PBMC A because it too is not well aligned with the other PBMC samples 
+# (it has additional cell types not conatined in the other, such as non CD8s)
+# We also filter C01D-1 because it has no replicates in the data.
+# Finally we filter two samples that have low cell counts.
+dge2 = dge[,dge$samples$donor != "PBMC B" & dge$samples$condition != "C01D-1" & 
+             dge$samples$donor != "PBMC A"]
+dge2 = dge2[,-c(28,32,48)]
+dge2 = dge2[filterByExpr(dge2),]
+dge2 = calcNormFactors(dge2)
+```
+
+```{r}
+cpm2 = cpm(dge2, log=T)
+cpm2 = cpm2[!grepl("TR[AB]", rownames(cpm2)),]
+pca2 = prcomp(t(cpm2))
+
+pca2$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge2$samples$donor, condition = dge2$samples$condition) %>%
+  group_by(condition) %>%
+  summarise(PC1=mean(PC1), PC2=mean(PC2)) -> conlab
+
+pca2$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge2$samples$donor, condition = dge2$samples$condition) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = condition))+
+  geom_text_repel(data=conlab, aes(label = condition, colour = condition), show.legend = F) +
+  theme_classic() -> p1
+
+pca2$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge2$samples$donor, condition = dge2$samples$condition) %>%
+  group_by(donor) %>%
+  summarise(PC1=mean(PC1), PC2=mean(PC2)) -> donlab
+
+pca2$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge2$samples$donor, condition = dge2$samples$condition) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = donor))+
+  geom_text_repel(data=donlab, aes(label = donor, colour = donor), show.legend = F) +
+  theme_classic() -> p2
+
+p2+ p1
+```
+
+```{r}
+library(sva)
+dge2$samples$donor = factor(as.character(dge2$samples$donor))
+dge2$samples$condition = factor(as.character(dge2$samples$condition))
+normcpm = removeBatchEffect(cpm2, batch = dge2$samples$donor, batch2 = dge2$samples$run, design = model.matrix(~0+dge2$samples$condition))
+normcpm = ComBat(cpm(dge2, log = T), batch = dge2$samples$donor, mod = model.matrix(~dge2$samples$condition))
+
+pca3 = prcomp(t(normcpm))
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge2$samples$donor, condition = dge2$samples$condition) %>%
+  group_by(condition) %>%
+  summarise(PC1=mean(PC1), PC2=mean(PC2)) -> conlab
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge2$samples$donor, condition = dge2$samples$condition) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = condition))+
+  geom_text_repel(data=conlab, aes(label = condition, colour = condition), show.legend = F) +
+  theme_classic() -> p1
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge2$samples$donor, condition = dge2$samples$condition) %>%
+  group_by(donor) %>%
+  summarise(PC1=mean(PC1), PC2=mean(PC2)) -> donlab
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge2$samples$donor, condition = dge2$samples$condition) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = donor))+
+  geom_text_repel(data=donlab, aes(label = donor, colour = donor), show.legend = F) +
+  theme_classic() -> p2
+
+p2 + p1
+```
+
+```{r}
+library(edgeR)
+s = levels(factor(paste(merged3$orig.ident, merged3$sample, merged3$condition, merged3$celltype)))
+
+bulks = lapply(as.list(s), function(x) {
+  b = rowSums(as.matrix(merged3@assays$RNA@counts[,paste(merged3$orig.ident, merged3$sample, merged3$condition, merged3$celltype) == x]))
+})
+names(bulks) = s
+
+b = reduce(bulks, cbind)
+colnames(b) = s
+
+dge = DGEList(b)
+
+dge$samples$group = factor(gsub("Sample_[1-4][AB] ","",rownames(dge$samples)))
+dge$samples$donor = factor(ifelse(grepl("Donor", dge$samples$group), substr(dge$samples$group, 1, 8), as.character(dge$samples$group)))
+dge$samples$condition = factor(gsub("Donor [0-9]* ","", dge$samples$group) %>% gsub(" [A-G]$","", .))
+dge$samples$celltype = gsub("C[0-9]*D[+-][0-9]* ","", dge$samples$condition) %>% gsub("Baseline ","",.)
+dge$samples$condition = gsub(" [0-9,A-Z,a-z,?,_]*$","", dge$samples$condition)
+dge$samples$run = factor(substr(rownames(dge$samples), 1, 9))
+dge$samples$group = factor(gsub("Donor [0-9]* ","",as.character(dge$samples$group)))
+
+dge = dge[, dge$samples$lib.size > 4000]
+
+dge = dge[filterByExpr(dge),]
+dge = calcNormFactors(dge)
+```
+
+```{r}
+library(sva)
+
+normcpm = removeBatchEffect(cpm(dge, log = T), batch = dge$samples$donor, batch2 = dge$samples$run, design = model.matrix(~0+dge$samples$condition+dge$samples$celltype))
+normcpm = ComBat(cpm(dge, log = T), batch = dge$samples$donor, mod = model.matrix(~dge$samples$condition+dge$samples$celltype))
+
+# pca3 = prcomp(t(cpm(dge, log = T)))
+pca3 = prcomp(t(normcpm[,dge$samples$celltype == "TCM"]))
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(condition = dge$samples$condition[dge$samples$celltype == "TCM"]) %>%
+  group_by(condition) %>%
+  summarise(PC1=mean(PC1), PC2=mean(PC2)) -> conlab
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(condition = dge$samples$condition[dge$samples$celltype == "TCM"]) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = condition))+
+  geom_text_repel(data=conlab, aes(label = condition, colour = condition), show.legend = F) +
+  theme_classic() -> p1
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge$samples$donor, condition = dge$samples$condition) %>%
+  group_by(donor) %>%
+  summarise(PC1=mean(PC1), PC2=mean(PC2)) -> donlab
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge$samples$donor, condition = dge$samples$condition) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = donor))+
+  geom_text_repel(data=donlab, aes(label = donor, colour = donor), show.legend = F) +
+  theme_classic() -> p2
+
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge$samples$donor, celltype = dge$samples$celltype) %>%
+  group_by(celltype) %>%
+  summarise(PC1=mean(PC1), PC2=mean(PC2)) -> ctlab
+
+pca3$x %>% as_tibble(rownames = "sample") %>%
+  mutate(donor = dge$samples$donor, celltype = dge$samples$celltype) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = celltype))+
+  geom_text_repel(data=ctlab, aes(label = celltype, colour = celltype), show.legend = F) +
+  theme_classic() -> p3
+
+p2 + p1 + p3
+```
+
+
+```{r}
+G = factor(paste(dge$samples$celltype, dge$samples$condition, sep = "_") %>% 
+             gsub("[?]","",.) %>% gsub("[+]","p",.) %>% gsub("[-]","m",.))
+R = dge$samples$run
+D = gsub(" ","_",dge$samples$donor)
+design = model.matrix(~0+G+R + D)
+
+v = voom(dge, design)
+
+fit = lmFit(v, design)
+cfit = contrasts.fit(fit, contrasts = makeContrasts(
+  "C01+1" = GEffector_C01Dp1 - GEffector_Baseline,
+  "C01+8" = GEffector_C01Dp8 - GEffector_Baseline,
+  "C04-1" = GEffector_C04Dm1 - GEffector_Baseline,
+  "C04+1" = GEffector_C04Dp1 - GEffector_Baseline,
+  "C13-1" = GEffector_C13Dm1 - GEffector_Baseline,
+  "C13+1" = GEffector_C13Dp1 - GEffector_Baseline,
+  "C22+1" = GEffector_C22Dp1 - GEffector_Baseline,
+  levels = design
+))
+efit = eBayes(cfit)
+
+summary(decideTests(efit, p.value = 0.5))
+```
+```{r}
+fit = lmFit(v, design)
+cfit = contrasts.fit(fit, contrasts = makeContrasts(
+  "C01+1" = GTCM_C01Dp1 - GTCM_Baseline,
+  "C01+8" = GTCM_C01Dp8 - GTCM_Baseline,
+  "C04-1" = GTCM_C04Dm1 - GTCM_Baseline,
+  "C04+1" = GTCM_C04Dp1 - GTCM_Baseline,
+  "C13-1" = GTCM_C13Dm1 - GTCM_Baseline,
+  "C13+1" = GTCM_C13Dp1 - GTCM_Baseline,
+  "C22+1" = GTCM_C22Dp1 - GTCM_Baseline,
+  levels = design
+))
+efit = eBayes(cfit)
+
+summary(decideTests(efit, p.value = 0.5))
+```
+
+
+### RUV III
+Does not work with this replicate structure :(
+
+```{r}
+library(ruv)
+
+
+dge2$samples$condition2 = factor(gsub("[+]","_plus_",dge2$samples$condition) %>% gsub("[-]","_minus_",.))
+
+r = replicate.matrix(dge2$samples$condition2)
+rownames(r) = rownames(dge2$samples)
+ctl =  head(row.names(cpm(dge2)), n = 1000)
+
+ruv_3 = RUVIII(Y = t(cpm(dge2, log = T)), M = r, ctl = ctl, k = 1, inputcheck = T,)
+```
+
+## RUV iv
+
+```{r}
+ruv_4 = RUV4(t(cpm(dge2, log = T)), X = r, ctl = ctl, k = 1)
+```
+
+## DGE Analysis
+
+```{r}
+G = dge2$samples$condition
+R = dge2$samples$run
+D = dge2$samples$donor
+
+design = model.matrix(~G+D+R)
+
+v = voom(dge2, design, plot = T)
+
+fit = lmFit(v, design)
+
+fit = contrasts.fit(fit, coefficients = c(2:8))
+
+efit = eBayes(fit)
+
+summary(decideTests(efit, p.value = 0.5))
+
+
+topTable(efit, coef = 1)
+```
+```{r}
+library(org.Hs.eg.db)
+efit$entrez = mapIds(org.Hs.eg.db, rownames(efit), "SYMBOL", column = "ENTREZID")
+kegg = kegga(efit, coef = 1, FDR = 0.5, species = "Hs", geneid = efit$entrez)
+topKEGG(kegg)
+```
+
+### No PBMC
+
+```{r}
+dge3 = dge2[,dge2$samples$condition != "PBMC"]
+G = factor(dge3$samples$condition)
+R = factor(dge3$samples$run)
+D = factor(dge3$samples$donor)
+
+design = model.matrix(~G+D+R)
+
+v = voom(dge3, design, plot = T)
+
+fit = lmFit(v, design)
+
+fit = contrasts.fit(fit, coefficients = c(2:21))
+
+efit = eBayes(fit)
+
+summary(decideTests(efit, p.value = 0.5))
+
+
+topTable(efit, coef = 1)
+```
+
+```{r}
+plotgene = function(g) {
+  x = data.frame(X = normcpm[g,], donor = dge2$samples$donor, condition = dge2$samples$condition)
+  x$s = paste(x$donor, x$condition)
+  ggplot(x, aes(donor, X)) + 
+    stat_summary(fun = mean, geom="bar", aes(fill= condition)) +
+    geom_point() + 
+    facet_wrap(~condition, scales = "free_x") + 
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") +
+    labs(x = element_blank(), y = paste0("log2 CPM ",g))
+}
+
+plotgene2 = function(g) {
+  x = data.frame(X = normcpm[g,], donor = dge2$samples$donor, condition = dge2$samples$condition)
+  ggplot(x, aes(condition, X)) + 
+    stat_summary(fun = mean, geom="bar", aes(fill= condition)) +
+    geom_point() + 
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") +
+    labs(x = element_blank(), y = paste0("log2 CPM ",g))
+}
+plotgene2("CARD16")
+```
+PBMCs by themselves...
+CRISPR Dead Cas 9 off target?
+
+```{r}
+FindMarkers(merged3, ident.1 = "C01D+1", ident.2 = "Baseline", group.by = "condition", latent.vars = c("sample", "orig.ident"), test.use = "LR") -> m
+
+m2 = topTable(efit, coef = 1, number = 117)
+
+vennDiagram(data.frame(pseudo_bulk = ifelse(row.names(efit) %in% rownames(m2), TRUE, FALSE), 
+                       single_cell = ifelse(row.names(efit) %in% rownames(m), TRUE, FALSE)))
+```
+
+
+## Functional readouts
+```{r}
+func = read.csv("../data/2022-07-18_AMC_ICS_Cleaned_Readout.csv")
+func = func[-26,]
+
+pca = prcomp(func[,-c(1:5)])
+
+pca$x %>% as_tibble() %>%
+  mutate(donor = func$Donor, condition = func$Timepoint) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(colour = condition)) +
+  theme_classic()
+```
+
+pca$rotation = 
+                  PC1          PC2          PC3          PC4         PC5         PC6
+CD4_IFNg -0.027042357  0.002431816 -0.005844169 -0.438726324 -0.28160233  0.85290561
+CD4_TNFa -0.032694258 -0.015479651 -0.010315274 -0.799827739 -0.30759906 -0.51404617
+CD4_IL2   0.005408232  0.689273840 -0.141498643 -0.296038446  0.64336588  0.05737633
+CD8_IFNg -0.731195476 -0.212360244 -0.641474812  0.002893525  0.09343038  0.00536280
+CD8_TNFa -0.679832658  0.198664680  0.704109543  0.035260746 -0.03508457 -0.01074273
+CD8_IL2  -0.036759755  0.663393934 -0.269401915  0.280899175 -0.63419487 -0.06980215
+
+CD8_IFNg and CD8_TNFa drive the PC1 variance.
+CD4_IL2 and CD8_IL2 for PC2
+
+```{r}
+func[,-c(3:5)] %>%
+  pivot_longer(-c(Donor, Timepoint)) %>%
+  ggplot(aes(Timepoint, value)) +
+  geom_point(aes(colour = Donor)) +
+  geom_line(aes(group = Donor, colour = Donor)) +
+  facet_wrap(~name) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+```
+
+
+
+```{r}
+func$group = paste(func$Donor, func$Timepoint) %>% gsub("Donor", "Donor ",. )
+func %>% group_by(group) %>%
+  summarise_all(mean) -> func2
+
+dge_bulk$samples %>% as_tibble() %>% left_join(func2, by = "group") -> x
+
+dge_func = dge_bulk
+
+dge_func$samples = cbind(dge_func$samples, x[,9:14])
+
+dge_func = dge_func[,!is.na(dge_func$samples$CD8_IL2)]
+
+normcpm = removeBatchEffect(cpm(dge_func, log = T), batch = as.numeric(dge_func$samples$CD8_IFNg), batch2 = as.numeric(dge_func$samples$CD8_IL2), design = model.matrix(~dge_func$samples$group))
+
+G = factor(dge_func$samples$condition)
+R = factor(dge_func$samples$run)
+D = factor(dge_func$samples$donor)
+
+design = model.matrix(~G+D+R+dge_func$samples$CD8_IFNg+dge_func$samples$CD8_IL2+dge_func$samples$CD4_IFNg+ dge_func$samples$CD4_TNFa+dge_func$samples$CD4_IL2+dge_func$samples$CD8_TNFa)
+
+v = voom(dge_func, design, plot = T)
+
+fit = lmFit(v, design)
+
+fit = contrasts.fit(fit, coefficients = c(2:21))
+
+efit = eBayes(fit)
+
+summary(decideTests(efit, p.value = 0.05))
+```
+
+## Celltype Proportions
+
+```{r}
+merged3@meta.data %>% as_tibble() %>%
+  group_by(condition) %>% mutate(norm = 1/n()) %>% ungroup() %>%
+  group_by(celltype) %>% mutate(tot = sum(norm)) %>%
+  group_by(celltype, condition) %>% summarise(f = sum(norm)/tot[1]) %>%
+  ggplot(aes(celltype, f)) +
+  geom_bar(stat="identity", aes(fill = condition)) +
+  theme_classic()
+  
+
+merged3@meta.data %>% as_tibble() %>%
+  group_by(condition) %>% mutate(norm = 1/n()) %>% ungroup() %>%
+  group_by(celltype) %>% mutate(tot = sum(norm)) %>%
+  group_by(celltype, condition) %>% summarise(f = sum(norm)/tot[1]) %>%
+  ggplot(aes(condition,f)) +
+  geom_point(aes(colour = celltype)) +
+  geom_line(aes(colour = celltype, group = celltype)) +
+  facet_wrap(~celltype, ncol = 5)+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+```
+
+
+```{r}
+effectors = merged3[,merged3$celltype == "Effector"]
+effectors@active.assay = "RNA"
+effectors %>% NormalizeData() %>% FindVariableFeatures() -> effectors
+varfeatures = effectors@assays$RNA@var.features[!grepl("TR[AB]", effectors@assays$RNA@var.features)]
+
+effectors = ScaleData(effectors) %>% RunPCA( features = varfeatures, verbose = F) %>% RunUMAP(dims = 1:20) 
+
+DimPlot(effectors, group.by = c("condition", "sample"), label = T)
+
+library(harmony)
+effectors = RunHarmony(effectors, group.by.vars = "sample")
+effectors = RunUMAP(effectors, reduction = "harmony", dims = 1:20)
+```
+
+## CytoTRACE
+
+```{r}
+library(CytoTRACE)
+
+CytoTRACE = CytoTRACE(as.matrix(merged3@assays$SCT@data))
+
+merged3$CytoTRACE = CytoTRACE$CytoTRACE
+plotto_signature_scoring_plot("CytoTRACE", merged3, size = 1)
+```
+
+
+## Shiny App
+```{r}
+library(ShinyCell)
+
+scConf = createConfig(merged3)
+
+makeShinyApp(merged3, scConf, gene.mapping = TRUE,
+             shiny.title = "HIV Cancer CD8 T Cells") 
+```
+

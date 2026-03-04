@@ -1,0 +1,1425 @@
+---
+title: "06_reservoir_data"
+author: "jibsch"
+date: "2023-01-31"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+## Introduction
+
+```{r}
+library(tidyverse)
+library(openxlsx)
+library(ggrepel)
+library(Seurat)
+library(edgeR)
+
+merged4 <- readRDS("/data/gpfs/projects/punim1612/Lewinlab/Lewinlab_AMC_local/output/merged4.Rds")
+RNA_dat_summarised2 = readRDS("../output/RNA_dat_summarised2.Rds")
+DNA_dat_summarised4 = readRDS("../output/DNA_dat_summarised4.Rds")
+
+donor_mapping = c("Donor 38" = "P1", "Donor 41" = "P2", "Donor 49" = "P4",
+                  "Donor 56" = "P6", "Donor 62" = "P7", "Donor 64" = "P8")
+
+source("~/tools/BioinfTools/Plotting_Functions.R")
+```
+Here we plot the functional data analysis values for responders and non-responders
+The data went through a few iterations... See the second round of ggsaves for the final 
+plots (adding additional donors)
+
+
+```{r}
+data = readWorkbook("../data/AMC 095 HIV DNA_updated 19 Dec 2019.xlsx", startRow = 5)
+
+seq = paste0("C",c(1,4,5,7,9,13,16,19,22,25,37,40))
+
+names(data)[5:40] = paste(c(rbind(seq,seq,seq)), names(data)[5:40], sep = "_")
+
+data %>% as_tibble() %>% filter(grepl("0(38|41|48|49|54|56|62|64)$", Study.ID)) %>% 
+  pivot_longer(cols = starts_with("C") | starts_with("D") | starts_with("A")) %>%
+  filter(!is.na(value)) %>%
+  mutate(name = factor(name)) %>% mutate(name = factor(name, levels = levels(name)[c(1,9,2:4,6:8,5)])) %>%
+  mutate(donor = paste("Donor", substr(Study.ID,6,8))) %>%
+  mutate(response = ifelse(donor %in% c("Donor 49", "Donor 56", "Donor 38"), "Response", "No response")) %>%
+  
+  mutate(name = recode(name, 
+                       "C1_D-1" = "D0.(BL)")) %>%
+  
+  filter(name != "C13_D-1") -> RNA_dat
+  
+ggplot(RNA_dat, aes(name, value)) + 
+  geom_point() + geom_line(aes(group = donor)) + 
+  facet_wrap(response~donor, scales = "free_y") +
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+
+```{r}
+RNA_dat %>%
+  mutate(time = factor(ifelse(name %in% c("Avg.pre-infusion" ,         "D0.(BL)"), "No dose",
+                       ifelse(grepl("C1_", name), "Single dose",  "Multi dose")),
+                       levels = c("No dose", "Single dose",  "Multi dose"))) %>%
+  mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41", "Donor 48", "Donor 54", "Donor 62", "Donor 64"))) %>%
+  group_by(donor, time, response) %>%
+  summarise(value = mean(value)) -> RNA_dat_summarised
+
+
+
+ggplot(RNA_dat_summarised, aes(time, value)) +
+  geom_bar(data = RNA_dat_summarised %>% group_by(time, response) %>% summarise(value = mean(value)),
+           stat = "identity",
+           aes(fill = time)) +
+  geom_point(aes(colour = donor)) +
+  geom_line(aes(group = donor, colour = donor)) +
+  facet_wrap(~response) +
+  scale_colour_manual(values = colour_donors) +
+  scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  scale_y_continuous(trans = "log10") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) ->p;p
+
+ggsave(p, filename = "../plots/RNA_functional_BSM_log.pdf", width = 15, height = 9, units = "cm")
+```
+
+
+## RNA
+
+```{r}
+data2 = readWorkbook("../data/US RNA replicate data incl 18s_averaged estimates incl.xlsx", startRow = 5)
+
+for(i in 1:length(data2$Study.ID)) {
+  if(is.na(data2$Study.ID[i])) 
+    data2[i,1] = last
+  else 
+    last = data2$Study.ID[i]
+}
+
+seq = paste0("C",c(1,4,5,7,9,13,16,19,22,25,37,40))
+
+names(data)[5:40] = paste(c(rbind(seq,seq,seq)), names(data)[5:40], sep = "_")
+
+data2 %>% 
+  as_tibble() %>% filter(grepl("-0(38|41|48|49|54|56|62|64)$", Study.ID)) %>% 
+  mutate(donor = paste("Donor", substr(Study.ID,10,11))) %>%
+  mutate(response = factor(ifelse(donor %in% c("Donor 49", "Donor 56", "Donor 38"), "Response", ifelse( donor %in% c("Donor 48", "Donor 54"),"Unclassified","No response")),
+                          levels = c("Response", "No response", "Unclassified"))) %>% 
+  
+  filter(!is.na(`average.US.HIV.copies/10^6.18S`)) %>% 
+  
+  select(donor, Timepoint, response, "average.US.HIV.copies/10^6.18S", "Average.number.US.RNA.copies") %>%
+  
+  mutate(Timepoint = recode(Timepoint, 
+                       "C1D-1" = "BL")) %>%
+  mutate(time = factor(ifelse(Timepoint %in% c("BL"), "No dose",
+                       ifelse(grepl("C1", Timepoint), "Single dose",  "Multi dose")),
+                       levels = c("No dose", "Single dose",  "Multi dose"))) -> RNA_dat
+  
+# ggplot(RNA_dat, aes(Timepoint, average.US.HIV.copies/10^6.18S)) + 
+#   geom_point() + geom_line(aes(group = donor)) + 
+#   facet_wrap(response~donor, scales = "free_y") +
+#   theme_classic()+
+#   theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+```{r}
+RNA_dat %>%
+  mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41", "Donor 62", "Donor 64", "Donor 48", "Donor 54"))) %>%
+  group_by(donor, time, response) %>%
+  summarise(value = mean(`average.US.HIV.copies/10^6.18S`), c = mean(Average.number.US.RNA.copies)) -> RNA_dat_summarised
+
+
+
+ggplot(RNA_dat_summarised, aes(time, value)) +
+  geom_bar(data = RNA_dat_summarised %>% group_by(time, response) %>% summarise(value = mean(value)),
+           stat = "identity",
+           aes(fill = time)) +
+  geom_point(aes(colour = donor)) +
+  geom_line(aes(group = donor, colour = donor)) +
+  facet_wrap(~response) +
+  scale_colour_manual(values = colour_donors) +
+  scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  # scale_y_continuous(trans = "log10") +
+  theme_classic() +
+  labs(y = "average.US.HIV.copies/10^6.18S") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) ->p;p
+
+ggsave(p, filename = "../plots/RNA_functional_BSM.pdf", width = 15, height = 9, units = "cm")
+```
+
+AMC095_062 and 064.xlsx not used - see below
+
+```{r}
+data5 = readWorkbook("../data/AMC095_062 and 064 updated qPCR data.xlsx", startRow = 4, sheet = 2)
+
+data5 %>% 
+  as_tibble() %>% filter(grepl("-0(38|41|48|49|54|56|62|64)$", patient)) %>% 
+  mutate(donor = paste("Donor", substr(patient,10,11))) %>%
+  mutate(response = factor(ifelse(donor %in% c("Donor 49", "Donor 56", "Donor 38"), "Response", 
+                                  ifelse( donor %in% c("Donor 48", "Donor 54"),"Unclassified", "No response")),
+                          levels = c("Response", "No response", "Unclassified"))) %>% 
+  
+  select(donor, visit, response, "average.US.HIV.RNA.copies./10^6.18S") %>%
+  
+  mutate(visit = recode(visit, 
+                       "C1D-1" = "BL", "C1D-1/Baseline" = "BL")) %>%
+  mutate(time = factor(ifelse(visit %in% c("BL"), "No dose",
+                       ifelse(grepl("C1", visit), "Single dose",  "Multi dose")),
+                       levels = c("No dose", "Single dose",  "Multi dose"))) -> RNA_dat2
+
+RNA_dat %>% select(-"Average.number.US.RNA.copies", -"Timepoint") %>%
+  rbind(RNA_dat2 %>% select(-"visit") %>% rename("average.US.HIV.copies/10^6.18S" = "average.US.HIV.RNA.copies./10^6.18S" )) %>% 
+  mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",  "Donor 62", "Donor 64", "Donor 48", "Donor 54"))) %>%
+  group_by(donor, time, response) %>%
+  summarise(value = mean(`average.US.HIV.copies/10^6.18S`)) -> RNA_dat_summarised2
+
+
+ggplot(RNA_dat_summarised2, aes(time, value)) +
+  geom_bar(data = RNA_dat_summarised2 %>% group_by(time, response) %>% summarise(value = median(value)),
+           stat = "identity",
+           aes(fill = time)) +
+  geom_point(aes(colour = donor)) +
+  geom_line(aes(group = donor, colour = donor)) +
+  facet_wrap(~response) +
+  scale_colour_manual(values = colour_donors) +
+  scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  # scale_y_continuous(trans = "log10") +
+  theme_classic() +
+  labs(y = "average.US.HIV.copies/10^6.18S") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) ->p;p
+
+ggsave(p, filename = "../plots/RNA_functional_BSM.pdf", width = 18, height = 9, units = "cm")
+```
+```{r}
+RNA_dat_summarised2 %>% 
+  filter(!donor %in% c("Donor 48", "Donor 54")) %>%
+  mutate(donor = donor_mapping[as.character(donor)]) %>%
+  ggplot( aes(time, value)) +
+  geom_bar(data = RNA_dat_summarised2 %>% group_by(time) %>% summarise(value = median(value)),
+           stat = "identity",
+           aes(fill = time)) +
+  geom_point(aes(shape = donor)) +
+  geom_line(aes(group = donor)) +
+  scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  # scale_y_continuous(trans = "log10") +
+  theme_classic() +
+  labs(y = "average.US.HIV.copies/10^6.18S") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) ->p;p
+
+ggsave(p, filename = "../plots/RNA_functional_BSM_no_groups.pdf", width = 10, height = 9, units = "cm")
+```
+
+## DNA2
+
+```{r}
+data3 = readWorkbook("../data/HIV DNA replicate data incl CCR5_averaged estimates incl.xlsx", startRow = 3)
+
+for(i in 1:length(data3$Study.ID)) {
+  if(is.na(data3$Study.ID[i])) 
+    data3[i,1] = last
+  else 
+    last = data3$Study.ID[i]
+}
+
+
+data3 %>% 
+  as_tibble() %>% filter(grepl("-0(38|41|48|49|54|56|62|64)$", Study.ID)) %>% 
+  mutate(donor = paste("Donor", substr(Study.ID,10,11))) %>%
+  mutate(response = factor(ifelse(donor %in% c("Donor 49", "Donor 56", "Donor 38"), "Response", ifelse( donor %in% c("Donor 48", "Donor 54"),"Unclassified","No response")),
+                           levels = c("Response", "No response", "Unclassified"))) %>% 
+  
+  filter(!is.na(`average.HIV.copies/10^6.CCR5`)) %>% 
+  
+  select(donor, Timepoint, response, "average.HIV.copies/10^6.CCR5", "Average.number.HIV.DNA.copies") %>%
+  
+  mutate(Timepoint = recode(Timepoint, 
+                       "C1 D-1" = "BL", "C1D-1" = "BL")) %>%
+  mutate(time = factor(ifelse(Timepoint %in% c("BL"), "No dose",
+                       ifelse(grepl("C1", Timepoint), "Single dose",  "Multi dose")),
+                       levels = c("No dose", "Single dose",  "Multi dose"))) -> DNA_dat
+  
+# ggplot(RNA_dat, aes(Timepoint, average.US.HIV.copies/10^6.18S)) + 
+#   geom_point() + geom_line(aes(group = donor)) + 
+#   facet_wrap(response~donor, scales = "free_y") +
+#   theme_classic()+
+#   theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+```{r}
+DNA_dat %>%
+  mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41", "Donor 62", "Donor 64", "Donor 48", "Donor 54"))) %>%
+  group_by(donor, time, response) %>%
+  summarise(value = mean(`average.HIV.copies/10^6.CCR5`), c = mean(Average.number.HIV.DNA.copies)) -> DNA_dat_summarised
+
+
+
+ggplot(DNA_dat_summarised, aes(time, value)) +
+  geom_bar(data = DNA_dat_summarised %>% group_by(time, response) %>% summarise(value = mean(value)),
+           stat = "identity",
+           aes(fill = time)) +
+  geom_point(aes(colour = donor)) +
+  geom_line(aes(group = donor, colour = donor)) +
+  facet_wrap(~response) +
+  scale_colour_manual(values = colour_donors) +
+  scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  # scale_y_continuous(trans = "log10") +
+  theme_classic() +
+  labs(y = "average.HIV.copies/10^6.CCR5") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) ->p;p
+
+ggsave(p, filename = "../plots/DNA_functional_BSM.pdf", width = 15, height = 9, units = "cm")
+```
+
+"AMC095_062 and 064.xlsx" had a calculation error...
+
+```{r}
+data4 = readWorkbook("../data/AMC095_062 and 064 updated qPCR data.xlsx", startRow = 6)
+
+data4 %>% 
+  as_tibble() %>% filter(grepl("-0(38|41|48|49|54|56|62|64)$", Sample.ID)) %>% 
+  mutate(donor = paste("Donor", substr(Sample.ID,10,11))) %>%
+  mutate(response = factor(ifelse(donor %in% c("Donor 49", "Donor 56", "Donor 38"), "Response", ifelse( donor %in% c("Donor 48", "Donor 54"),"Unclassified", "No response")),
+                           levels = c("Response", "No response", "Unclassified"))) %>%  
+  
+  select(donor, Timepoint, response,  "average.HIV.copies/10^.CCR5") %>%
+  
+  mutate(Timepoint = recode(Timepoint, 
+                       "C1D-1" = "BL", "C1D-1/Baseline" = "BL")) %>%
+  mutate(time = factor(ifelse(Timepoint %in% c("BL"), "No dose",
+                       ifelse(grepl("C1", Timepoint), "Single dose",  "Multi dose")),
+                       levels = c("No dose", "Single dose",  "Multi dose"))) -> DNA_dat4
+
+
+DNA_dat %>% select(-"Average.number.HIV.DNA.copies") %>%
+  rbind(DNA_dat4  %>% rename("average.HIV.copies/10^6.CCR5" = "average.HIV.copies/10^.CCR5" )) %>%
+  mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41", "Donor 62", "Donor 64", "Donor 48", "Donor 54"))) %>%
+  group_by(donor, time, response) %>%
+  summarise(value = mean(`average.HIV.copies/10^6.CCR5`)) -> DNA_dat_summarised4
+
+ggplot(DNA_dat_summarised4, aes(time, value)) +
+  geom_bar(data = DNA_dat_summarised4 %>% group_by(time, response) %>% summarise(value = median(value)),
+           stat = "identity",
+           aes(fill = time)) +
+  geom_point(aes(colour = donor)) +
+  geom_line(aes(group = donor, colour = donor)) +
+  facet_wrap(~response) +
+  scale_colour_manual(values = colour_donors) +
+  scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  # scale_y_continuous(trans = "log10") +
+  theme_classic() +
+  labs(y = "average.HIV.copies/10^6.CCR5") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) ->p;p
+
+ggsave(p, filename = "../plots/DNA_functional_BSM.pdf", width = 18, height = 9, units = "cm")
+```
+
+## RNA/DNA
+
+```{r}
+RNA_dat_summarised2 %>% inner_join(DNA_dat_summarised4, by = c("donor", "time", "response")) %>% 
+  mutate(ratio = value.x/value.y) %>% 
+  filter(!is.infinite(ratio)) ->ratio_dat
+  
+ggplot(ratio_dat, aes(time, ratio)) +
+  geom_bar(data = ratio_dat %>% group_by(time, response) %>% summarise(ratio = mean(ratio)),
+           stat = "identity",
+           aes(fill = time)) +
+  geom_point(aes(colour = donor)) +
+  geom_line(aes(group = donor, colour = donor)) +
+  facet_wrap(~response) +
+  scale_colour_manual(values = colour_donors) +
+  scale_fill_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  # scale_y_continuous(trans = "log10") +
+  theme_classic() +
+  labs(y = "RNA copies / DNA copies") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) ->p;p
+
+ggsave(p, filename = "../plots/RNA_vs_DNA_functional_BSM.pdf", width = 15, height = 9, units = "cm")
+```
+
+
+## CD8 Tet+ 
+
+```{r}
+library(openxlsx)
+
+data = readWorkbook("../data/CD8 Tet+.xlsx")
+
+data[-1, ] %>% as_tibble() %>% 
+  group_by(X1) %>%
+  summarise(BL = mean(Baseline, X4, na.rm = T, trim = 0.5))
+
+data = data[-1,]
+cd8 = data.frame(P = data$X1, 
+                 B = rowMeans(data[,3:4], na.rm = T),
+                 S = rowMeans(cbind(as.numeric(data[,5]), as.numeric(data[,6]), as.numeric(data[,7])) , na.rm = T),
+                 M = rowMeans(cbind(as.numeric(data[,8]), as.numeric(data[,9]), as.numeric(data[,10]),
+                                    as.numeric(data[,11]), as.numeric(data[,12]), as.numeric(data[,15])) , na.rm = T)
+                 )
+
+library(speckle)
+
+prop.trans <- asin(sqrt(props))
+
+cd8_trans = cd8 %>% mutate(B = asin(sqrt(B)), S = asin(sqrt(S)), M = asin(sqrt(M)))
+
+G = 
+
+design = model.matrix()
+
+fit <- lmFit(cd8_trans,design)
+```
+
+## Correlations
+
+```{r}
+library(Seurat)
+merged4 <- readRDS("~/projects/Lewinlab_AMC_local/output/merged4.Rds")
+
+RNA_dat %>% select(-"Average.number.US.RNA.copies", -time) %>% 
+  mutate(Timepoint = recode(Timepoint,
+                            "C1D1" = "C1D+1",
+                            "C1D7" = "C1D8",
+                            "C4D1" = "C4D+1")) %>%
+  rbind(RNA_dat2  %>% select(-time) %>% dplyr::rename("average.US.HIV.copies/10^6.18S" = "average.US.HIV.RNA.copies./10^6.18S" , "Timepoint" = "visit")) %>% 
+  mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",  "Donor 62", "Donor 64", "Donor 48", "Donor 54"))) %>% 
+  group_by(donor, Timepoint, response) %>%
+  summarise(value = mean(`average.US.HIV.copies/10^6.18S`)) -> RNA_dat_summarised2
+
+RNA_dat %>% select(-"Average.number.US.RNA.copies", -Timepoint) %>% 
+  rbind(RNA_dat2  %>% select(-visit) %>% dplyr::rename("average.US.HIV.copies/10^6.18S" = "average.US.HIV.RNA.copies./10^6.18S" )) %>% 
+  mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",  "Donor 62", "Donor 64", "Donor 48", "Donor 54"))) %>% 
+  group_by(donor, time, response) %>%
+  summarise(value = mean(`average.US.HIV.copies/10^6.18S`)) -> RNA_dat_summarised_bsm2
+```
+
+
+```{r}
+merged4$Cluster1 %>% as_tibble() %>%
+  mutate(donor = merged4$sample, Timepoint = merged4$Timepoint) %>% 
+  mutate(Timepoint = recode(Timepoint,
+                       "Baseline" = "BL",  "C01D-1" = "BL",
+                       "C01D+1" = "C1D+1", "C01D+8" = "C1D8",
+                       "C04D-1" = "C4D-1", "C04D+1" = "C4D+1")) %>%
+  group_by(donor, Timepoint) %>% summarise(ISG = mean(value))  %>%
+  inner_join(RNA_dat_summarised2) %>% 
+  filter(response != "Unclassified") %>%
+  ggplot(aes(ISG, value)) + geom_point(aes(color= Timepoint)) + facet_wrap(~response) + geom_line(aes(group = Timepoint, colour = Timepoint)) +
+  geom_line(aes(group = donor), linetype = "dashed")
+
+# No Time
+merged4$Cluster1 %>% as_tibble() %>%
+  mutate(donor = merged4$sample, Timepoint = merged4$Timepoint) %>% 
+  mutate(Timepoint = recode(Timepoint,
+                       "Baseline" = "BL",  "C01D-1" = "BL",
+                       "C01D+1" = "C1D+1", "C01D+8" = "C1D8",
+                       "C04D-1" = "C4D-1", "C04D+1" = "C4D+1")) %>%
+  group_by(donor, Timepoint) %>% summarise(ISG = mean(value))  %>%
+  inner_join(RNA_dat_summarised2) %>% 
+  filter(response != "Unclassified") %>%
+  ggplot(aes(ISG, value)) + geom_point() + facet_wrap(~response)  +
+  geom_smooth()
+
+merged4$Cluster1 %>% as_tibble() %>%
+  mutate(donor = merged4$sample, Timepoint = merged4$Timepoint) %>% 
+  mutate(Timepoint = recode(Timepoint,
+                       "Baseline" = "BL",  "C01D-1" = "BL",
+                       "C01D+1" = "C1D+1", "C01D+8" = "C1D8",
+                       "C04D-1" = "C4D-1", "C04D+1" = "C4D+1")) %>%
+  group_by(donor, Timepoint) %>% summarise(ISG = mean(value))  %>%
+  inner_join(RNA_dat_summarised2) %>% 
+  filter(response != "Unclassified") %>%
+  group_by(response) %>%
+  summarise(c = cor(ISG, value))
+
+#MX1 gene
+merged4@assays$SCT@data["MX1",] %>% as_tibble() %>%
+  mutate(donor = merged4$sample, Timepoint = merged4$Timepoint) %>% 
+  mutate(Timepoint = recode(Timepoint,
+                       "Baseline" = "BL",  "C01D-1" = "BL",
+                       "C01D+1" = "C1D+1", "C01D+8" = "C1D8",
+                       "C04D-1" = "C4D-1", "C04D+1" = "C4D+1")) %>%
+  group_by(donor, Timepoint) %>% summarise(MX1 = mean(value))  %>%
+  inner_join(RNA_dat_summarised2) %>% 
+  filter(response != "Unclassified") %>%
+  ggplot(aes(MX1, value)) + geom_point(aes(color= Timepoint)) + facet_wrap(~response) + geom_line(aes(group = Timepoint, colour = Timepoint)) +
+  geom_line(aes(group = donor), linetype = "dashed")
+
+merged4@assays$SCT@data["STAT1",] %>% as_tibble() %>%
+  mutate(donor = merged4$sample, time = merged4$time) %>% 
+  group_by(donor, time) %>% summarise(MX1 = mean(value))  %>% 
+  inner_join(RNA_dat_summarised_bsm2) %>%
+  filter(response != "Unclassified") %>%
+  group_by(response, time) %>%
+  mutate(c = cor(MX1, value)) %>%
+  ggplot(aes(MX1, value)) +  facet_wrap(~response) + 
+  geom_line(aes(group = time, colour = time), size = 2) +
+  geom_line(aes(group = donor), linetype = "dashed") +
+  geom_point(aes(fill= donor), shape = 21, size = 3) +
+  scale_colour_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  scale_fill_manual(values = colour_donors) +
+  theme_classic() +
+  labs(x = "STAT1 expression", y = "RNA levels average.US.HIV.RNA.copies./10^6.18S")->p;p
+ggsave(p, filename = "../plots/Functional_data_STAT1_RNA.pdf", width = 15, height = 9, units = "cm")
+
+merged4@assays$SCT@data["MX1",] %>% as_tibble() %>%
+  mutate(donor = merged4$sample, time = merged4$time) %>% 
+  group_by(donor, time) %>% summarise(MX1 = mean(value))  %>% 
+  inner_join(RNA_dat_summarised_bsm2) %>%
+  filter(response != "Unclassified") %>%
+  group_by(response, time) %>%
+  mutate(c = cor(MX1, value)) %>%
+  ggplot(aes(MX1, value)) +  facet_wrap(~response) + 
+  geom_line(aes(group = time, colour = time), size = 2) +
+  geom_line(aes(group = donor), linetype = "dashed") +
+  geom_point(aes(fill= donor), shape = 21, size = 3) +
+  scale_colour_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  scale_fill_manual(values = colour_donors) +
+  theme_classic() +
+  labs(x = "MX1 expression", y = "RNA levels average.US.HIV.RNA.copies./10^6.18S")->p;p
+ggsave(p, filename = "../plots/Functional_data_MX1_RNA.pdf", width = 15, height = 9, units = "cm")
+
+merged4@assays$SCT@data["NAV2",] %>% as_tibble() %>%
+  mutate(donor = merged4$sample, time = merged4$time) %>% 
+  group_by(donor, time) %>% summarise(NAV2 = mean(value))  %>% 
+  inner_join(RNA_dat_summarised2) %>%
+  filter(response != "Unclassified") %>%
+  group_by(response, time) %>%
+  mutate(c = cor(NAV2, value)) %>%
+  ggplot(aes(NAV2, value)) + geom_point(aes(color= time)) + 
+  facet_wrap(~response) + geom_line(aes(group = time, colour = time))
+```
+
+```{r}
+merged4@assays$SCT@data[merged4@assays$SCT@var.features,] %>% as_tibble(rownames = "gene") %>% 
+  filter(!grepl("TR", gene)) %>%
+  pivot_longer(-gene) %>%
+  inner_join(as_tibble(merged4@meta.data, rownames = "name") %>% select(name, time, sample)) %>%
+  rename("donor" = "sample") %>%
+  group_by(donor, time, gene) %>% summarise(exp = mean(value))  %>% 
+  inner_join(RNA_dat_summarised2) %>%
+  filter(response != "Unclassified") %>%
+  group_by(response, time, gene) %>%
+  summarise(c = cor(exp, value), exp = mean(exp), v = mean(value)) %>% arrange(-c) -> cordat
+
+cordat %>% group_by(gene, time) %>% summarise(diff = abs(c[1] - c[2]), exp=max(exp)) %>%  
+  group_by(gene) %>% 
+    mutate(ratio = diff[2]/diff[1]) %>%
+  arrange(-ratio)%>%
+  filter(exp > 1)
+```
+```{r}
+plot_gene = function(g) {
+  merged4@assays$SCT@data[g,] %>% as_tibble() %>%
+  mutate(donor = merged4$sample, time = merged4$time) %>% 
+  group_by(donor, time) %>% summarise(exp = mean(value))  %>% 
+  inner_join(RNA_dat_summarised2) %>%
+  filter(response != "Unclassified") %>%
+  group_by(response, time) %>%
+  mutate(c = cor(exp, value)) %>%
+  ggplot(aes(exp, value)) + geom_point(aes(color= time)) + facet_wrap(~response) + geom_line(aes(group = time, colour = time)) + ggtitle(g)
+}
+
+plot_gene("PRKX")
+plot_gene("ACTB")
+plot_gene("IFITM1")
+plot_gene("ISG15")
+```
+## Interferon Signature
+```{r}
+isg = c("ADAR","APOL6","ARID5B","ARL4A","AUTS2","B2M","BANK1","BATF2","BPGM","BST2","BTG1","C1R","C1S","CASP1","CASP3","CASP4","CASP7","CASP8","CCL2","CCL5","CCL7","CD274","CD38","CD40","CD69","CD74","CD86","CDKN1A","CFB","CFH","CIITA","CMKLR1","CMPK2","CSF2RB","CXCL10","CXCL11","CXCL9","RIGI","DDX60","DHX58","EIF2AK2","EIF4E3","EPSTI1","FAS","FCGR1A","FGL2","FPR1","CMTR1","GBP4","GBP6","GCH1","GPR18","GZMA","HERC6","HIF1A","HLA-A","HLA-B","HLA-DMA","HLA-DQA1","HLA-DRB1","HLA-G","ICAM1","IDO1","IFI27","IFI30","IFI35","IFI44","IFI44L","IFIH1","IFIT1","IFIT2","IFIT3","IFITM2","IFITM3","IFNAR2","IL10RA","IL15","IL15RA","IL18BP","IL2RB","IL4R","IL6","IL7","IRF1","IRF2","IRF4","IRF5","IRF7","IRF8","IRF9","ISG15","ISG20","ISOC1","ITGB7","JAK2","KLRK1","LAP3","LATS2","LCP2","LGALS3BP","LY6E","LYSMD2","MARCHF1","METTL7B","MT2A","MTHFD2","MVP","MX1","MX2","MYD88","NAMPT","NCOA3","NFKB1","NFKBIA","NLRC5","NMI","NOD1","NUP93","OAS2","OAS3","OASL","OGFR","P2RY14","PARP12","PARP14","PDE4B","PELI1","PFKP","PIM1","PLA2G4A","PLSCR1","PML","PNP","PNPT1","HELZ2","PSMA2","PSMA3","PSMB10","PSMB2","PSMB8","PSMB9","PSME1","PSME2","PTGS2","PTPN1","PTPN2","PTPN6","RAPGEF6","RBCK1","RIPK1","RIPK2","RNF213","RNF31","RSAD2","RTP4","SAMD9L","SAMHD1","SECTM1","SELP","SERPING1","SLAMF7","SLC25A28","SOCS1","SOCS3","SOD2","SP110","SPPL2A","SRI","SSPN","ST3GAL5","ST8SIA4","STAT1","STAT2","STAT3","STAT4","TAP1","TAPBP","TDRD7","TNFAIP2","TNFAIP3","TNFAIP6","TNFSF10","TOR1B","TRAFD1","TRIM14","TRIM21","TRIM25","TRIM26","TXNIP","UBE2L6","UPP1","USP18","VAMP5","VAMP8","VCAM1","WARS1","XAF1","XCL1","ZBP1","ZNFX1")
+
+merged4 = AddModuleScore(merged4, features = list(isg = isg))
+
+merged4$Cluster1 %>% as_tibble() %>%
+  mutate(donor = merged4$sample, time = merged4$time) %>% 
+  group_by(donor, time) %>% summarise(ISG = mean(value))  %>% 
+  inner_join(RNA_dat_summarised_bsm2) %>%
+  filter(response != "Unclassified") %>%
+  group_by(response, time) %>%
+  mutate(c = cor(ISG, value)) %>%
+  ggplot(aes(ISG, value)) +  facet_wrap(~response) + 
+  geom_line(aes(group = time, colour = time), size = 2) +
+  geom_line(aes(group = donor), linetype = "dashed") +
+  geom_point(aes(fill= donor), shape = 21, size = 3) +
+  scale_colour_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  scale_fill_manual(values = colour_donors) +
+  theme_classic() +
+  labs(x = "ISG signature expression", y = "RNA levels average.US.HIV.RNA.copies./10^6.18S") ->p;p
+ggsave(p, filename = "../plots/Functional_data_ISG_RNA.pdf", width = 15, height = 9, units = "cm")
+
+merged4$Cluster1 %>% as_tibble() %>%
+  mutate(donor = merged4$sample, time = merged4$time) %>% 
+  group_by(donor, time) %>% summarise(ISG = mean(value))  %>% 
+  inner_join(RNA_dat_summarised_bsm2) %>% 
+  filter(response != "Unclassified") %>%
+  group_by(response) %>%
+  summarise(c = cor(ISG, value)) 
+```
+Correlation of ISG with RNA for single DNA for multiple
+in responders -> RNA up at single doese and correlated with ISG
+Over time the DNA then goes down
+
+split timepoints into +1 +8
+
+```{r}
+DNA_dat %>% select(-"Average.number.HIV.DNA.copies", -time) %>% 
+  mutate(Timepoint = recode(Timepoint,
+                            "C1 D+1" = "C1D+1",
+                            "C1 D8" = "C1D8",
+                            "C4 D-1" = "C4D11", 
+                            "C13 D-1" = "C13D-1")) %>% 
+  rbind(DNA_dat4  %>% select(-time) %>% dplyr::rename("average.HIV.copies/10^6.CCR5" = "average.HIV.copies/10^.CCR5")) %>% 
+  mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",  "Donor 62", "Donor 64", "Donor 48", "Donor 54"))) %>% 
+  group_by(donor, Timepoint, response) %>%
+  summarise(value = mean(`average.HIV.copies/10^6.CCR5`)) -> DNA_dat_summarised4
+
+
+DNA_dat %>% select(-"Average.number.HIV.DNA.copies", -Timepoint) %>% 
+  rbind(DNA_dat4  %>% select(-Timepoint) %>% dplyr::rename("average.HIV.copies/10^6.CCR5" = "average.HIV.copies/10^.CCR5")) %>% 
+  mutate(donor = factor(donor, levels = c("Donor 38", "Donor 49", "Donor 56",
+                                            "Donor 41",  "Donor 62", "Donor 64", "Donor 48", "Donor 54"))) %>% 
+  group_by(donor, time, response) %>%
+  summarise(value = mean(`average.HIV.copies/10^6.CCR5`)) -> DNA_dat_summarised4_bsm
+
+merged4$Cluster1 %>% as_tibble() %>%
+  mutate(donor = merged4$sample, Timepoint = merged4$Timepoint) %>% 
+  mutate(Timepoint = recode(Timepoint,
+                       "Baseline" = "BL",  "C01D-1" = "BL",
+                       "C01D+1" = "C1D+1", "C01D+8" = "C1D8",
+                       "C04D-1" = "C4D-1", "C04D+1" = "C4D+1")) %>%
+  group_by(donor, Timepoint) %>% summarise(ISG = mean(value))  %>%
+  inner_join(DNA_dat_summarised4) %>% 
+  filter(response != "Unclassified") %>%
+  ggplot(aes(ISG, value)) + geom_point(aes(color= Timepoint)) + facet_wrap(~response) + geom_line(aes(group = Timepoint, colour = Timepoint)) +
+  geom_line(aes(group = donor), linetype = "dashed")
+
+merged4$Cluster1 %>% as_tibble() %>%
+  mutate(donor = merged4$sample, Timepoint = merged4$Timepoint) %>% 
+  mutate(Timepoint = recode(Timepoint,
+                       "Baseline" = "BL",  "C01D-1" = "BL",
+                       "C01D+1" = "C1D+1", "C01D+8" = "C1D8",
+                       "C04D-1" = "C4D-1", "C04D+1" = "C4D+1")) %>%
+  group_by(donor, Timepoint) %>% summarise(ISG = mean(value))  %>%
+  inner_join(DNA_dat_summarised4) %>% 
+  filter(response != "Unclassified") %>%
+  ggplot(aes(ISG, value)) + geom_point() + facet_wrap(~response) + 
+  geom_smooth()
+
+merged4$Cluster1 %>% as_tibble() %>%
+  mutate(donor = merged4$sample, Timepoint = merged4$Timepoint) %>% 
+  mutate(Timepoint = recode(Timepoint,
+                       "Baseline" = "BL",  "C01D-1" = "BL",
+                       "C01D+1" = "C1D+1", "C01D+8" = "C1D8",
+                       "C04D-1" = "C4D-1", "C04D+1" = "C4D+1")) %>%
+  group_by(donor, Timepoint) %>% summarise(ISG = mean(value))  %>%
+  inner_join(DNA_dat_summarised4) %>% 
+  filter(response != "Unclassified") %>% 
+  group_by(response) %>%
+  summarise(cor = cor(ISG, value))
+```
+```{r}
+merged4$Cluster1 %>% as_tibble() %>%
+  mutate(donor = merged4$sample, time = merged4$time) %>% 
+  group_by(donor, time) %>% summarise(ISG = mean(value))  %>% 
+  inner_join(DNA_dat_summarised4_bsm) %>%
+  filter(response != "Unclassified") %>%
+  group_by(response, time) %>%
+  mutate(c = cor(ISG, value)) %>%
+  ggplot(aes(ISG, value)) + 
+  geom_line(aes(group = time, colour = time), size = 2) +
+  geom_point(aes(fill= donor), shape = 21, size = 3) + facet_wrap(~response) + 
+  geom_line(aes(group = donor), linetype = "dashed") +
+  scale_colour_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  scale_fill_manual(values = colour_donors) +
+  theme_classic() +
+  labs(x = "ISG signature expression", y = "DNA levels average.HIV.copies/10^6.CCR5")->p;p
+ggsave(p, filename = "../plots/Functional_data_ISG_DNA.pdf", width = 15, height = 9, units = "cm")
+```
+
+```{r}
+merged4@assays$SCT@data["MX1",] %>% as_tibble() %>%
+  mutate(donor = merged4$sample, time = merged4$time) %>% 
+  group_by(donor, time) %>% summarise(ISG = mean(value))  %>% 
+  inner_join(DNA_dat_summarised4_bsm) %>%
+  filter(response != "Unclassified") %>%
+  group_by(response, time) %>%
+  mutate(c = cor(ISG, value)) %>%
+  ggplot(aes(ISG, value)) + 
+  geom_line(aes(group = time, colour = time), size = 2) +
+  geom_point(aes(fill= donor), shape = 21, size = 3) + facet_wrap(~response) + 
+  geom_line(aes(group = donor), linetype = "dashed") +
+  scale_colour_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  scale_fill_manual(values = colour_donors) +
+  theme_classic() +
+  labs(x = "MX1 expression", y = "DNA levels average.HIV.copies/10^6.CCR5") ->p;p
+ggsave(p, filename = "../plots/Functional_data_MX1_DNA.pdf", width = 15, height = 9, units = "cm")
+```
+
+```{r}
+merged4@assays$SCT@data["STAT1",] %>% as_tibble() %>%
+  mutate(donor = merged4$sample, time = merged4$time) %>% 
+  group_by(donor, time) %>% summarise(ISG = mean(value))  %>% 
+  inner_join(DNA_dat_summarised4_bsm) %>%
+  filter(response != "Unclassified") %>%
+  group_by(response, time) %>%
+  mutate(c = cor(ISG, value)) %>%
+  ggplot(aes(ISG, value)) + 
+  geom_line(aes(group = time, colour = time), size = 2) +
+  geom_point(aes(fill= donor), shape = 21, size = 3) + facet_wrap(~response) + 
+  geom_line(aes(group = donor), linetype = "dashed") +
+  scale_colour_manual(values = c("lightgrey", "grey", "darkgrey")) +
+  scale_fill_manual(values = colour_donors) +
+  theme_classic() +
+  labs(x = "STAT1 expression", y = "DNA levels average.HIV.copies/10^6.CCR5")->p;p
+ggsave(p, filename = "../plots/Functional_data_STAT1_DNA.pdf", width = 15, height = 9, units = "cm")
+```
+
+
+## Correlate Ratios with genes
+
+```{r}
+ggplot(ratio_dat, aes(time, ratio)) +
+  geom_point() + facet_wrap(~donor, scales = "free_y")
+```
+
+```{r}
+plot_gene_correlation = function(g) {
+  merged4@meta.data %>% as_tibble() %>%
+    mutate(exp = merged4@assays$SCT@data[g,]) %>%
+    group_by(sample, time) %>%
+    summarise(exp = mean(exp)) %>%
+    inner_join(ratio_dat , by = c("sample" = "donor", "time" ="time")) %>%
+    ggplot(aes(ratio, exp)) + geom_point(aes(colour = time, shape = sample)) + geom_line(aes(group = time, colour = time))
+}
+```
+
+
+```{r}
+cors = data.frame()
+for(g in row.names(merged4@assays$SCT@data)){
+  merged4@meta.data %>% as_tibble() %>%
+    mutate(exp = merged4@assays$SCT@data[g,]) %>%
+    filter(time == "No dose") %>%
+    group_by(sample) %>%
+    summarise(exp = mean(exp)) %>%
+    inner_join(ratio_dat %>% filter(time == "No dose"), by = c("sample" = "donor")) ->cd
+  cors = rbind(cors, c(g, cor(cd$ratio, cd$exp), mean(cd$exp)))
+  
+}
+names(cors) = c("gene", "cor", "mean_exp")
+cors_c1 %>% as_tibble() %>% arrange(desc(cor)) %>% head(n=15)
+
+inner_join(cors, cors_c1, by = "gene") %>% as_tibble %>% 
+  filter(!is.na(cor.x), !is.na(cor.y)) %>% mutate(diff = as.numeric(cor.x)-as.numeric(cor.y)) %>% 
+  filter(mean_exp.x > 1 | mean_exp.y > 1) %>%
+  # filter(abs(as.numeric(cor.x)) < 0.1) %>%
+  arrange(-abs(diff))
+```
+ 
+## Ratios over time
+ 
+```{r}
+ggplot(RNA_dat_summarised2, aes(time, value)) +
+  geom_point()+
+  facet_wrap(~donor)
+```
+### Correlate baseline RNA with GEX
+
+```{r}
+plot_gene_correlation2 = function(g) {
+  merged4@meta.data %>% as_tibble() %>%
+    mutate(exp = merged4@assays$SCT@data[g,]) %>%
+    group_by(sample, time) %>%
+    summarise(exp = mean(exp)) %>%
+    inner_join(RNA_dat_summarised2 , by = c("sample" = "donor", "time" ="time")) %>%
+    ggplot(aes(value, exp)) + geom_point(aes(colour = time, shape = sample)) + geom_line(aes(group = time, colour = time))
+}
+```
+```{r}
+cors = data.frame()
+for(g in row.names(merged4@assays$SCT@data)){
+  merged4@meta.data %>% as_tibble() %>%
+    mutate(exp = merged4@assays$SCT@data[g,]) %>%
+    filter(time == "No dose") %>%
+    group_by(sample) %>%
+    summarise(exp = mean(exp)) %>%
+    inner_join(RNA_dat_summarised2 %>% filter(time == "No dose"), by = c("sample" = "donor")) ->cd
+  cors = rbind(cors, c(g, cor(cd$value, cd$exp), mean(cd$exp)))
+  
+}
+names(cors) = c("gene", "cor", "mean_exp")
+cors %>% as_tibble() %>% arrange(desc(cor)) %>% head(n=15)
+
+write_csv(x = cors %>% as_tibble() %>% arrange(desc(cor)), file = "../output/correlations_RNA_baseline_GEX.csv")
+```
+
+## Correlate ratio between BL and C1
+
+```{r}
+plot_gene_correlation3 = function(g) {
+  gene_ratios %>% inner_join(rna_ratios, by = c("sample" = "donor")) %>%
+    filter(gene == g) %>%
+    ggplot(aes(ratio.x, ratio.y))+ geom_point() + 
+    geom_text_repel(aes(label = sample))
+}
+```
+```{r}
+merged4$sample_time = paste(merged4$sample, merged4$time)
+PB = AverageExpression(merged4, group.by = "sample_time", features = row.names(merged4@assays$SCT@data), assays = "SCT")
+PB$SCT %>% as_tibble(rownames = "gene") %>% 
+  pivot_longer(-gene) %>%
+  filter(!grepl("Multi", name)) %>%
+  mutate(sample = paste("Donor" , limma::strsplit2(name, split = " ")[,2])) %>%
+  group_by(gene, sample) %>% summarise(ratio = value[2]/value[1]) -> gene_ratios
+
+RNA_dat_summarised2 %>% filter(time != "Multi dose") %>%
+  pivot_wider(names_from = "time", values_from = value) %>%
+  mutate(ratio = `Single dose`/`No dose`) %>% filter(!is.na(ratio)) -> rna_ratios
+
+gene_ratios %>% inner_join(rna_ratios, by = c("sample" = "donor")) %>%
+  group_by(gene) %>%
+  summarise(c = cor(ratio.x, ratio.y)) -> cors2
+
+cors2 %>% arrange(desc(c))
+
+# cors2 = data.frame()
+# for(g in row.names(merged4@assays$SCT@data)){
+#   PB$SCT[g,] %>%
+#     group_by(sample, time) %>%
+#     summarise(exp = mean(exp)) %>%
+#     pivot_wider(names_from = "time", values_from = "exp") %>%
+#     mutate(R = `Single dose`/`No dose`) %>%
+#     inner_join(rna_ratios, by = c("sample" = "donor")) ->cd
+#   cors2 = rbind(cors2, c(g, cor(cd$ratio, cd$R), mean(cd$exp)))
+#   
+# }
+```
+
+## RNA Change correlation
+```{r}
+plot_gene_correlation4 = function(g) {
+  PB$SCT %>% as_tibble(rownames = "gene") %>% 
+    filter(gene == g) %>%
+    pivot_longer(-gene) %>%
+    
+    filter(grepl("No dose", name)) %>% 
+    mutate(sample = paste("Donor" , limma::strsplit2(name, split = " ")[,2])) %>%
+    inner_join(rna_ratios, by = c("sample" = "donor")) %>%
+    ggplot(aes(ratio, value))+ geom_point() + 
+    geom_text_repel(aes(label = sample))
+}
+```
+
+```{r}
+plot_gene_correlation_rna = function(g) {
+  PB$SCT %>% as_tibble(rownames = "gene") %>% 
+    filter(gene == g) %>%
+    pivot_longer(-gene) %>% 
+    mutate(sample = paste("Donor" , limma::strsplit2(name, split = " ")[,2])) %>%
+    mutate(time = limma::strsplit2(name, split = " ")[,3]) %>%
+    inner_join(rna_ratios, by = c("sample" = "donor")) %>%
+    ggplot(aes(ratio, value, color = time))+ geom_point() +
+    geom_line(aes(group = time)) +
+    geom_text_repel(aes(label = sample)) +
+    ggtitle(g)
+}
+```
+
+```{r}
+PB$SCT %>% as_tibble(rownames = "gene") %>% 
+  pivot_longer(-gene) %>%
+  filter(grepl("No dose", name)) %>% 
+  mutate(sample = paste("Donor" , limma::strsplit2(name, split = " ")[,2])) %>%
+  inner_join(rna_ratios, by = c("sample" = "donor")) %>% 
+  group_by(gene) %>% summarise(cor = cor(value, ratio), mean = mean(value)) %>%
+  arrange(desc(cor)) -> cors3
+```
+
+```{r}
+cors3 %>% filter(cor>0.8 | cor< -0.8, mean>0.5) %>% 
+  left_join(PB$SCT %>% as_tibble(rownames = "gene")) %>%
+  pivot_longer(cols = starts_with("Donor")| starts_with("PBMC")) %>%
+  filter(grepl("Donor", name), grepl("No dose", name)) %>%
+  group_by(gene) %>% arrange(gene, value) %>% mutate(r = ifelse(cor>0,1:6, 6:1)) %>% 
+  ungroup() %>%
+  count(name, r) %>%
+  mutate(name = factor(name)) %>% mutate(name = factor(name, levels = levels(name)[c(6, 2, 4, 3, 5, 1)])) %>%
+  ggplot(aes(r, name)) +
+  geom_tile(aes(fill = n)) +
+  geom_text(aes(label = n), colour = "white") 
+```
+
+## DNA Ratios Prediction
+```{r}
+plot_gene_correlation5 = function(g) {
+  PB$SCT %>% as_tibble(rownames = "gene") %>% 
+    filter(gene == g) %>%
+    pivot_longer(-gene) %>%
+    
+    filter(grepl("No dose", name)) %>% 
+    mutate(sample = paste("Donor" , limma::strsplit2(name, split = " ")[,2])) %>%
+    inner_join(dna_ratios, by = c("sample" = "donor")) %>%
+    ggplot(aes(ratio, value))+ geom_point() + 
+    geom_text_repel(aes(label = sample))
+}
+```
+
+```{r}
+DNA_dat_summarised4 %>% filter(time != "Multi dose") %>%
+  pivot_wider(names_from = "time", values_from = value) %>%
+  mutate(ratio = `Single dose`/`No dose`) %>% filter(!is.na(ratio)) -> dna_ratios
+
+
+PB$SCT %>% as_tibble(rownames = "gene") %>% 
+  pivot_longer(-gene) %>%
+  filter(grepl("No dose", name)) %>% 
+  mutate(sample = paste("Donor" , limma::strsplit2(name, split = " ")[,2])) %>%
+  inner_join(dna_ratios, by = c("sample" = "donor")) %>% 
+  group_by(gene) %>% summarise(cor = cor(value, ratio), mean = mean(value)) %>%
+  arrange(desc(cor)) -> cors4
+
+head(cors4 %>% arrange((cor)))
+```
+```{r}
+cors4 %>% filter(cor>0.8 | cor< -0.8, mean>0.5) %>% 
+  left_join(PB$SCT %>% as_tibble(rownames = "gene")) %>%
+  pivot_longer(cols = starts_with("Donor")| starts_with("PBMC")) %>%
+  filter(grepl("Donor", name), grepl("No dose", name)) %>%
+  group_by(gene) %>% arrange(gene, value) %>% mutate(r = 1:6) %>% 
+  mutate(cordir = ifelse(cor>0, "pos", "neg")) %>%
+  ungroup() %>%
+  count(name, r, cordir) %>%
+  ggplot(aes(r, name)) +
+  geom_tile(aes(fill = n)) +
+  geom_text(aes(label = n), colour = "white") +
+  facet_wrap(~cordir)
+
+cors4 %>% filter(cor>0.8 | cor< -0.8, mean>0.5) %>% 
+  left_join(PB$SCT %>% as_tibble(rownames = "gene")) %>%
+  pivot_longer(cols = starts_with("Donor")| starts_with("PBMC")) %>%
+  filter(grepl("Donor", name), grepl("No dose", name)) %>%
+  group_by(gene) %>% arrange(gene, value) %>% mutate(r = ifelse(cor>0,1:6, 6:1)) %>% 
+  ungroup() %>%
+  count(name, r) %>%
+  mutate(name = factor(name)) %>% mutate(name = factor(name, levels = levels(name)[c(1,2,6,3,5,4)])) %>%
+  ggplot(aes(r, name)) +
+  geom_tile(aes(fill = n)) +
+  geom_text(aes(label = n), colour = "white") 
+```
+
+## RNA/DNA Ratios Prediction
+
+
+```{r}
+RNA_dat_summarised2 %>% inner_join(DNA_dat_summarised4, by = c("donor", "time", "response")) %>% 
+  mutate(ratio = value.x/value.y) %>% 
+  filter(!is.infinite(ratio)) %>%
+  select(-value.x, -value.y) %>%
+  pivot_wider(names_from = "time", values_from = "ratio") %>%
+  mutate(ratio = `Single dose`/`No dose`) %>% 
+  filter(!is.na(ratio)) ->ratio_dat
+
+
+
+PB$SCT %>% as_tibble(rownames = "gene") %>% 
+  pivot_longer(-gene) %>%
+  filter(grepl("No dose", name)) %>% 
+  mutate(sample = paste("Donor" , limma::strsplit2(name, split = " ")[,2])) %>%
+  inner_join(ratio_dat, by = c("sample" = "donor")) %>% 
+  group_by(gene) %>% summarise(cor = cor(value, ratio), mean = mean(value)) %>%
+  arrange(desc(cor)) -> cors5
+
+head(cors5 %>% arrange((cor)))
+head(cors5 %>% arrange(desc(mean),desc(cor))) 
+```
+```{r}
+cors5 %>% filter(cor>0.8 | cor< -0.8, mean>0.5) %>%  
+  left_join(PB$SCT %>% as_tibble(rownames = "gene")) %>%
+  pivot_longer(cols = starts_with("Donor")| starts_with("PBMC")) %>%
+  filter(grepl("Donor", name), grepl("No dose", name)) %>%
+  group_by(gene) %>% arrange(gene, value) %>% mutate(r = 1:6) %>% 
+  mutate(cordir = ifelse(cor>0, "pos", "neg")) %>%
+  ungroup() %>%
+  count(name, r, cordir) %>%
+  ggplot(aes(r, name)) +
+  geom_tile(aes(fill = n)) +
+  geom_text(aes(label = n), colour = "white") +
+  facet_wrap(~cordir)
+
+cors5 %>% filter(cor>0.8 | cor< -0.8, mean>0.5) %>% 
+  left_join(PB$SCT %>% as_tibble(rownames = "gene")) %>%
+  pivot_longer(cols = starts_with("Donor")| starts_with("PBMC")) %>%
+  filter(grepl("Donor", name), grepl("No dose", name)) %>%
+  group_by(gene) %>% arrange(gene, value) %>% mutate(r = ifelse(cor>0,1:6, 6:1)) %>% 
+  ungroup() %>%
+  count(name, r) %>%
+  mutate(name = factor(name)) %>% mutate(name = factor(name, levels = levels(name)[c(6,4,5,2,3,1)])) %>%
+  ggplot(aes(r, name)) +
+  geom_tile(aes(fill = n)) +
+  geom_text(aes(label = n), colour = "white") 
+```
+## Pseudo Bulk
+```{r}
+library(edgeR)
+pseudo = AggregateExpression(merged4, group.by = "sample_time", assays = "RNA")
+
+dge = DGEList(pseudo$RNA)
+dge = dge[,grepl("No dose", row.names(dge$samples))]
+
+summary(filterByExpr(dge, min.count = 3))
+dge = dge[filterByExpr(dge, min.count = 3),]
+
+dge = calcNormFactors(dge)
+
+plotMDS(dge)
+
+dge$samples$order = c(6,4,5,2,3,1)
+```
+
+```{r}
+dge2 = dge[,-5]
+design = model.matrix(~1+ratio_dat$ratio[c(1, 4, 2, 3, 5)]+
+                        dna_ratios$ratio[c(1,4,2,3,5)] +
+                        rna_ratios$ratio[c(1,4,2,3,5)])
+colnames(design) = c("Intercept", "ratio", "dna_ratio", "rna_ratio")
+
+dge2 = estimateDisp(dge2, design, robust = T)
+
+fit = glmFit(dge2, design)
+lrt_rna_dna_ratio = glmLRT(fit, coef = 2)
+lrt_dna_ratio = glmLRT(fit, coef = 3)
+lrt_rna_ratio = glmLRT(fit, coef = 4)
+
+summary(decideTests.DGELRT(lrt_rna_dna_ratio, p.value = 0.2))
+summary(decideTests.DGELRT(lrt_dna_ratio, p.value = 0.2))
+summary(decideTests.DGELRT(lrt_rna_ratio, p.value = 0.2))
+
+topTags(lrt_rna_ratio, n=50)
+
+data.frame(exp = cpm(dge2,log = T)["SELL",], ratio = rna_ratios$ratio[c(1, 4, 2, 3, 5)]) %>%
+  ggplot(aes(ratio, exp)) + geom_point()
+```
+### KEGG
+```{r}
+library(org.Hs.eg.db)
+entrez = mapIds(org.Hs.eg.db, row.names(dge2), "SYMBOL", column = "ENTREZID")
+
+kegg_rna = kegga.DGELRT(lrt_rna_ratio, species = "Hs", geneid = entrez, FDR = 0.2)
+topKEGG(kegg_rna)
+
+kegg_dna = kegga.DGELRT(lrt_dna_ratio, species = "Hs", geneid = entrez, FDR = 0.2)
+topKEGG(kegg_dna)
+```
+
+### Hallmark
+
+```{r}
+mh = read.table("~/projects/references/human/Hallmark_Gene_Sets/h.all.v2023.2.Hs.symbols.gmt", sep = "%")
+
+data = list()
+
+con = file("~/projects/references/human/Hallmark_Gene_Sets/h.all.v2023.2.Hs.symbols.gmt", "r")
+  while ( TRUE ) {
+    line = readLines(con, n = 1)
+    if ( length(line) == 0 ) {
+      break
+    }
+    split = strsplit2(line, split = "\t")
+    #print(split)
+    data[[split[1]]] = split[-c(1:2)]
+  }
+
+  close(con)
+  
+print("blank")
+```
+
+```{r}
+
+roasts_rna_ratio = lapply(data, function(x) roast(dge2, design = design, index = x,contrast = 4 ))
+
+rbind(roasts_rna_ratio[[2]]$p.value[,2], roasts_rna_ratio[[1]]$p.value[,2])
+
+p_vals = lapply(roasts_rna_ratio, function(x) x$p.value[,2])
+p_vals_df = purrr::reduce(p_vals, rbind)
+
+row.names(p_vals_df) = names(p_vals)
+colnames(p_vals_df) = c("Down", "Up", "UpOrDown", "Mixed")
+
+p_vals_df %>% as_tibble(rownames = "pathway") %>% arrange(Down)
+p_vals_df %>% as_tibble(rownames = "pathway") %>% arrange(Up)
+```
+```{r}
+roasts_dna_ratio = lapply(data, function(x) roast(dge2, design = design, index = x, contrast = 3))
+
+
+p_vals_dna = lapply(roasts_dna_ratio, function(x) x$p.value[,2])
+p_vals_df_dna = purrr::reduce(p_vals_dna, rbind)
+
+row.names(p_vals_df_dna) = names(p_vals_dn)
+colnames(p_vals_df_dna) = c("Down", "Up", "UpOrDown", "Mixed")
+
+p_vals_df_dna %>% as_tibble(rownames = "pathway") %>% arrange(Down)
+p_vals_df_dna %>% as_tibble(rownames = "pathway") %>% arrange(Up)
+```
+```{r}
+
+roasts_rna_dna_ratio = lapply(data, function(x) roast(dge2, design = design, index = x,contrast = 2 ))
+
+rbind(roasts_rna_dna_ratio[[2]]$p.value[,2], roasts_rna_dna_ratio[[1]]$p.value[,2])
+
+p_vals = lapply(roasts_rna_dna_ratio, function(x) x$p.value[,2])
+p_vals_df_rna_dna = purrr::reduce(p_vals, rbind)
+
+row.names(p_vals_df_rna_dna) = names(p_vals)
+colnames(p_vals_df_rna_dna) = c("Down", "Up", "UpOrDown", "Mixed")
+
+p_vals_df_rna_dna %>% as_tibble(rownames = "pathway") %>% arrange(Down)
+p_vals_df_rna_dna %>% as_tibble(rownames = "pathway") %>% arrange(Up)
+```
+
+```{r}
+p_vals_df_rna_dna %>% as_tibble(rownames = "pathway") %>%
+  mutate(Up_RNA = p_vals_df[,2], Dn_RNA = p_vals_df[,1],
+        Up_DNA = p_vals_df_dna[,2], Dn_DNA = p_vals_df_dna[,1] ) %>%
+  filter( (Up<0.1 | Down <0.1) & (Up_RNA<0.1 | Dn_RNA<0.1)  & (Up_DNA<0.1 | Dn_DNA < 0.1)) %>%
+  dplyr::select (-UpOrDown, - Mixed)
+```
+
+### PB DGE Per Cluster
+```{r}
+merged4$gg = paste(merged4$sample, merged4$time, merged4$seurat_clusters)
+pseudo = AggregateExpression(merged4, group.by = "gg", assays = "RNA")
+
+dge = DGEList(pseudo$RNA)
+dge = dge[,grepl("No dose", row.names(dge$samples))]
+
+summary(filterByExpr(dge, min.count = 1, min.total.count = 1, min.prop = 0))
+dge = dge[filterByExpr(dge, min.count = 1, min.total.count = 1, min.prop = 0),]
+
+dge = calcNormFactors(dge)
+
+plotMDS(dge)
+
+dge$samples$order = c(6,4,5,2,3,1)
+```
+```{r}
+dge2 = dge[,grepl(" 2$", row.names(dge$samples))]
+design = model.matrix(~1+rna_ratios$ratio[c(1,4,2,3,5)])
+colnames(design) = c("Intercept", "rna_ratio")
+
+dge2 = estimateDisp(dge2, design, robust = T)
+
+fit = glmFit(dge2, design)
+lrt_rna_ratio = glmLRT(fit, coef = 2)
+
+
+summary(decideTests.DGELRT(lrt_rna_ratio, p.value = 0.2))
+
+topTags(lrt_rna_ratio, n=50)
+
+data.frame(exp = cpm(dge2,log = T)["SELL",], ratio = rna_ratios$ratio[c(1, 4, 2, 3, 5)]) %>%
+  ggplot(aes(ratio, exp)) + geom_point()
+```
+
+
+
+
+```{r}
+merged4 = AddModuleScore(merged4, features = list(kras = data$HALLMARK_KRAS_SIGNALING_DN), name = "HALLMARK_KRAS_SIGNALING_D")
+
+plotto_signature_scoring_plot(merged4, sig = "HALLMARK_KRAS_SIGNALING_D1", reduction = "harmony_umap", size = 1)
+
+VlnPlot(merged4[,!grepl("PBMC", merged4$sample) &
+                  !grepl("Multi", merged4$time)], "HALLMARK_KRAS_SIGNALING_D1", 
+        group.by = "sample_time")
+
+VlnPlot(merged4[,merged4$time == "No dose" ], "HALLMARK_KRAS_SIGNALING_D1", 
+        group.by = "seurat_clusters")
+
+merged4@meta.data %>% as_tibble() %>%
+  filter(time == "No dose") %>%
+  group_by(seurat_clusters) %>% mutate(m=median(HALLMARK_KRAS_SIGNALING_D1)) -> pdat;
+
+  ggplot(pdat,aes(reorder(seurat_clusters, m), HALLMARK_KRAS_SIGNALING_D1)) +
+  geom_violin(draw_quantiles = 0.5)
+
+ggplot(pdat %>% filter(seurat_clusters == 6), aes(sample, HALLMARK_KRAS_SIGNALING_D1)) +
+  geom_violin()
+
+pdat %>% count(sample, seurat_clusters) %>%
+  group_by(sample) %>% mutate(f = n/sum(n)*100) %>%
+  ggplot(aes(sample, f)) + geom_point() + facet_wrap(~seurat_clusters)
+
+merged4@meta.data %>% as_tibble() %>%
+    filter(time == "No dose") %>%
+  group_by(sample) %>% mutate(m=mean(HALLMARK_KRAS_SIGNALING_D1)) %>%
+  ggplot(aes(reorder(sample, m), HALLMARK_KRAS_SIGNALING_D1)) +
+  geom_violin(draw_quantiles = 0.5)
+
+merged4@meta.data %>% as_tibble() %>%
+    filter(time == "No dose") %>%
+  group_by(sample) %>% mutate(tot=n()) %>%
+  group_by(seurat_clusters, sample) %>% summarise(m=mean(HALLMARK_KRAS_SIGNALING_D1), f = n()/tot[1]*100) %>%
+  filter(seurat_clusters == 6) %>%
+  ggplot(aes(m,f)) +
+  geom_point(aes(color=seurat_clusters))
+```
+```{r}
+merged4 = SetIdent(merged4, value = "seurat_clusters")
+merged4 = FindSubCluster(merged4, cluster = 1, subcluster.name = "C1_sub" , graph.name = "SCT_nn")
+
+VlnPlot(merged4[,!grepl("PBMC", merged4$sample) &
+                  grepl("No dose", merged4$time) &
+                  merged4$seurat_clusters == 6], 
+        "HALLMARK_KRAS_SIGNALING_D1", 
+        group.by = "sample")
+
+VlnPlot(merged4[,!grepl("PBMC", merged4$sample) &
+                  grepl("No dose", merged4$time) &
+                  merged4$C1_sub == "1_2"], 
+        "HALLMARK_KRAS_SIGNALING_D1", 
+        group.by = "sample")
+```
+## Cluster Proportions vs virus
+
+
+
+```{r}
+#merged4 = FindNeighbors(merged4, reduction = "harmony", dims = 1:30)
+#merged4 = FindClusters(merged4, resolution = 1)
+
+merged4@meta.data %>% as_tibble() %>%
+  count(sample, time, seurat_clusters) %>%
+  group_by(sample, time) %>%
+  mutate(f = n/sum(n)*100) %>%
+  filter(!grepl("PBMC", sample)) -> frequencies
+
+RNA_dat_summarised2 %>% inner_join(DNA_dat_summarised4, by = c("donor", "time", "response")) %>% 
+  mutate(ratio = value.x/value.y) %>% 
+  filter(!is.infinite(ratio)) %>%
+  select(-value.x, -value.y) %>%
+  pivot_wider(names_from = "time", values_from = "ratio") %>%
+  mutate(ratio = `Single dose`/`No dose`) %>% 
+  filter(!is.na(ratio)) ->rna_over__dnaratios
+
+frequencies %>%
+  filter(time == "No dose") %>%
+  inner_join(rna_over__dnaratios, by = c("sample" = "donor")) %>%
+  group_by(seurat_clusters) %>% 
+  summarise(cor = cor(ratio, f))
+
+frequencies %>%
+  filter(time == "No dose") %>%
+  inner_join(rna_over__dnaratios, by = c("sample" = "donor")) %>%
+  ggplot(aes(f, ratio)) + geom_point() + facet_wrap(~seurat_clusters) 
+```
+```{r}
+DNA_dat_summarised4 %>% filter(time != "Multi dose") %>%
+  pivot_wider(names_from = "time", values_from = value) %>%
+  mutate(ratio = `Single dose`/`No dose`) %>% filter(!is.na(ratio)) -> dna_ratios
+
+frequencies %>%
+  filter(time == "No dose") %>%
+  inner_join(dna_ratios, by = c("sample" = "donor")) %>%
+  group_by(seurat_clusters) %>% 
+  summarise(cor = cor(ratio, f))
+
+frequencies %>%
+  filter(time == "No dose") %>%
+  inner_join(dna_ratios, by = c("sample" = "donor")) %>%
+  ggplot(aes(f, ratio)) + geom_point() + facet_wrap(~seurat_clusters)
+```
+### Load Updated Metadata
+```{r}
+library(openxlsx)
+RNA_dat3 = readWorkbook("../data/Gubser_aPD-1 Suppl material DEC25.xlsx", sheet = 7, startRow = 2, colNames = T)
+RNA_dat3 = RNA_dat3[!is.na(RNA_dat3$`average.US.HIV.copies/10^6.18S`),]
+RNA_dat3 %>% filter(grepl("C1D", Timepoint) | grepl("Baseline", Timepoint)) %>%
+  select(Study.ID, Timepoint, "average.US.HIV.copies/10^6.18S") %>% 
+  fill(Study.ID, .direction = "down") %>%
+  mutate(Timepoint = recode(Timepoint, "C1D-1=Baseline" = "Baseline", "C1D-1" = "Baseline",
+                            "C1D-1 =Baseline" = "Baseline")) %>%
+  mutate(Timepoint  = ifelse(Timepoint == "Baseline", "Baseline", "Single")) %>%
+  group_by(Timepoint, Study.ID) %>% summarise("average.US.HIV.copies/10^6.18S" = mean(`average.US.HIV.copies/10^6.18S`)) -> RNA_dat_summarised3
+
+RNA_dat_summarised2 %>%
+  mutate(Study.ID = donor_mapping[as.character(donor)]) %>% 
+  mutate(Timepoint = recode(time, "No dose" = "Baseline", "Single dose" = "Single")) %>%
+  left_join(RNA_dat_summarised3) %>%
+  mutate(value = `average.US.HIV.copies/10^6.18S`) %>% select(donor, time, value) -> RNA_dat_summarised_updated
+```
+
+```{r}
+library(openxlsx)
+# DNA_data3 = readWorkbook("../data/Gubser_aPD-1 Suppl material DEC25.xlsx", sheet = 7, startRow = 2, colNames = T)
+# DNA_data3 = DNA_data3[!is.na(DNA_data3$`average.US.HIV.copies/10^6.18S`),]
+# DNA_data3 %>% filter(grepl("C1D", Timepoint) | grepl("Baseline", Timepoint)) %>%
+#   select(Study.ID, Timepoint, `average.US.HIV.copies/10^6.18S`) %>%
+#   fill(Study.ID, .direction = "down") %>%
+#   mutate(Timepoint = recode(Timepoint, "C1D-1=Baseline" = "Baseline", "C1D-1" = "Baseline")) %>%
+#   mutate(Timepoint  = ifelse(Timepoint == "Baseline", "Baseline", "Single")) %>%
+#   group_by(Timepoint, Study.ID) %>% summarise(`average.US.HIV.copies/10^6.18S` = mean(`average.US.HIV.copies/10^6.18S`)) -> RNA_dat_summarised3
+
+
+  
+```
+
+```{r}
+library(ggrepel)
+# RNA_dat_summarised3 %>%
+#   pivot_wider(names_from = Timepoint, values_from = "average.US.HIV.copies/10^6.18S") %>% 
+#   mutate(ratio = Single/Baseline) %>% filter(!is.na(ratio)) -> rna_ratios
+RNA_dat_summarised2 %>%
+  pivot_wider(names_from = time, values_from = "value") %>% 
+  mutate(ratio = `Single dose`/`No dose`) %>% filter(!is.na(ratio)) -> rna_ratios
+
+RNA_dat_summarised_updated %>%
+  pivot_wider(names_from = time, values_from = value) %>% 
+  mutate(ratio = `Single dose`/`No dose`) %>% filter(!is.na(ratio)) -> rna_ratios
+
+DNA_dat_summarised3 %>%
+  pivot_wider(names_from = Timepoint, values_from = "average.US.HIV.copies/10^6.18S") %>% 
+  mutate(ratio = Single/Baseline) %>% filter(!is.na(ratio)) -> dna_ratios
+
+
+
+frequencies %>%
+  filter(time == "No dose") %>%
+  mutate(Study.ID = donor_mapping[as.character(sample)]) %>%
+  inner_join(rna_ratios) %>%
+  group_by(seurat_clusters) %>% 
+  summarise(cor = cor(ratio, f))
+
+frequencies %>%
+  filter(time == "No dose") %>%
+  inner_join(rna_ratios, by = c("sample" = "donor"))  -> fdat
+
+lms = lapply(as.list(unique(fdat$seurat_clusters)), function(x) 
+  lm(fdat$ratio[fdat$seurat_clusters == x] ~ fdat$f[fdat$seurat_clusters == x]))
+
+stats = lapply(lms, function(x) summary(x)$coefficients)
+
+pvals = purrr::reduce(stats, rbind) %>% as_tibble(rownames = "s") %>%
+  filter(s != "(Intercept)")
+intercepts = purrr::reduce(stats, rbind) %>% as_tibble(rownames = "s") %>%
+  filter(s == "(Intercept)")
+
+
+
+fdat %>%
+  mutate(direction = ratio > 1) %>%
+  mutate(seurat_clusters = as.numeric(as.character(seurat_clusters))) %>%
+  left_join(data.frame(seurat_clusters = 0:8, int = intercepts$Estimate, slope = pvals$Estimate)) %>%
+  group_by(seurat_clusters, direction) %>%
+  summarise(value = case_when(direction == TRUE & slope[1] > 0 ~ min(f),
+                              direction == TRUE & slope[1] < 0 ~ max(f),
+                              direction == FALSE & slope[1] > 0 ~ max(f),
+                              .default = min(f)),
+            slope = ifelse(slope[1] > 0, "pos", "neg")) %>%
+  distinct() %>%
+  ungroup() %>% mutate( direction = ifelse(direction, "up", "down")) %>%
+  pivot_wider(names_from = direction, values_from = value) %>% 
+  filter(slope == "pos" & up>down | slope =="neg" & up<down) %>%
+  mutate(intercept = (up+down)/2) -> divdata
+  
+
+frequencies %>%
+  filter(time == "No dose") %>%
+  inner_join(rna_ratios, by = c("sample" = "donor"))
+  
+ggplot(fdat, aes(f, ratio)) + geom_point() + facet_wrap(~seurat_clusters) + 
+  geom_abline(data = data.frame(seurat_clusters = 0:8, int = intercepts$Estimate, slope = pvals$Estimate),
+              aes(intercept = int, slope = slope), colour = "darkblue", linetype = "dashed") +
+    geom_label(data = data.frame(seurat_clusters = 0:8, l = paste("p =", round(pvals$`Pr(>|t|)`, 3))), 
+              aes(label = l), x = 37, y = 1.1, colour = "darkblue") +
+    theme_classic() +
+    geom_hline(yintercept = 1) +
+    geom_vline(data = divdata, aes(xintercept = intercept), colour = "red", linetype = "dashed") +
+    geom_text_repel(aes(label = sample)) +
+    labs(x = "celltype proportion (%) at baseline", y = "virus RNA ratio (single dose/baseline)")
+```
+
+```{r}
+
+
+select = c(0:8)[pvals$`Pr(>|t|)` < 0.08]
+rsquare = data.frame(seurat_clusters = 5:6, c = c(cor(fdat$f[fdat$seurat_clusters == 5], fdat$ratio[fdat$seurat_clusters == 5]),
+                                                  cor(fdat$f[fdat$seurat_clusters == 6], fdat$ratio[fdat$seurat_clusters == 6])))
+
+ggplot(fdat[fdat$seurat_clusters %in% select,], aes(f, ratio)) + geom_point() + facet_wrap(~seurat_clusters) + 
+  geom_abline(data = data.frame(seurat_clusters = 0:8, int = intercepts$Estimate, slope = pvals$Estimate)[select+1,],
+              aes(intercept = int, slope = slope), colour = "darkblue", linetype = "dashed") +
+    geom_label(data = data.frame(seurat_clusters = 5:6, l = paste("p =", round(pvals$`Pr(>|t|)`, 3)[select+1], "\nr2 =", round(rsquare$c,2))), 
+              aes(label = l), x = 10, y = 1.1, colour = "darkblue") +
+    theme_classic() +
+    geom_hline(yintercept = 1) +
+    geom_vline(data = divdata[divdata$seurat_clusters%in% select,], aes(xintercept = intercept), colour = "red", linetype = "dashed") +
+    geom_text_repel(aes(label = donor_mapping[as.character(sample)])) +
+    labs(x = "celltype proportion (%) at baseline", y = "virus RNA ratio (single dose/baseline)")->p;p
+
+ggsave(p, filename = "../plots/Functional_composition_correlation2.pdf", width = 20, height = 9, units = "cm")
+```
+
+```{r}
+m = FindAllMarkers(merged4, only.pos = F)
+
+m %>% as_tibble() %>%
+  filter(gene %in% row.names(topTags(lrt_rna_ratio, n = 50))) %>%
+  mutate(direction = ifelse(avg_log2FC>0, "up","down")) %>%
+  count(cluster, direction) %>%
+  pivot_wider(names_from = direction, values_from = n) %>%
+  mutate(ratio = log2(up/down)) %>%
+  left_join(pvals %>% mutate(cluster = factor(0:11))) %>%
+  ggplot(aes(ratio, Estimate)) + geom_point() +
+  geom_text(aes(label = cluster), position = position_nudge(x=0.1, y=0.01)) +
+  geom_hline(yintercept = 0, linetype="dashed")+
+  geom_vline(xintercept = 0, linetype="dashed") +
+  theme_classic()
+
+
+```
+
+```{r}
+frequencies %>%
+  filter(seurat_clusters %in% c(6,7,11,2,8,10), 
+         !sample %in%  c("Donor 48", "Donor 54")) %>%
+  mutate(dir = factor(ifelse(seurat_clusters %in% c(6,7,11), "negative", "positive"))) %>%
+  ggplot(aes(reorder(seurat_clusters, as.numeric(dir)), f)) + 
+  geom_bar(stat="identity", aes(fill = time), position = "dodge") +
+  facet_wrap(~sample)
+
+frequencies %>%
+  filter(seurat_clusters %in% c(6,7,11,2,8,10), 
+         !sample %in%  c("Donor 48", "Donor 54"), 
+         time == "No dose") %>%
+  inner_join(rna_ratios, by = c("sample" = "donor")) %>% 
+  mutate(dir = factor(ifelse(seurat_clusters %in% c(6,7,11), "negative", "positive"))) %>%
+  ggplot(aes(reorder(sample, ratio), f)) + 
+  geom_bar(stat="identity") +
+  facet_wrap(dir~seurat_clusters)
+```
+
+## Responder DEGs
+```{r}
+seu = merged4[,merged4$sample %in% names(donor_mapping)]
+seu = SetIdent(seu, value = "seurat_clusters")
+table(Idents(seu))
+m5 = FindMarkers(seu, ident.1 = c("Donor 38", "Donor 49"), subset.ident = "5", group.by = "sample")
+m6 = FindMarkers(seu, ident.1 = c("Donor 38", "Donor 49"), subset.ident = "6", group.by = "sample")
+```
+
+DEGs responders non responders
+Figure 5
+CD1-1
