@@ -1,0 +1,1258 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## Load libraries and set Path
+
+```{r}
+setwd('/data/projects/punim1612/Lewinlab/Lewinlab_AMC_local/tony/')
+
+library(Seurat)
+library(tidyverse)
+library(ComplexHeatmap)
+library(ggpubr)
+library(patchwork)
+```
+
+## Preprocessing seurat dataset
+
+```{r}
+set.seed(42)
+seu <- readRDS('/data/projects/punim1612/Lewinlab/Lewinlab_AMC_local/output/merged4.Rds')
+seu@meta.data$barcode <- rownames(seu@meta.data)
+
+meta <- read.csv('230529_merged_gex_vdj.csv', row.names = 1)
+meta$barcode <- rownames(meta)
+meta <- meta[,c('barcode', 'updated_clone_id', 'clone_counts',
+                'chain_status', 'v_call_VDJ_main', 'v_call_VJ_main', 'j_call_VDJ_main', 'j_call_VJ_main',
+                'junction_VDJ','junction_VJ', 'junction_aa_VDJ', 'junction_aa_VJ')]
+
+meta <- left_join(seu@meta.data, meta, by = 'barcode')
+meta$junction_aa_VJ_main <- meta$junction_aa_VJ %>% str_split_i(pattern = '\\|', 1)
+meta$junction_aa_VDJ_main <- meta$junction_aa_VDJ %>% str_split_i(pattern = '\\|', 1)
+
+meta <- meta %>%
+    group_by(sample, junction_aa_VJ_main, junction_aa_VDJ_main) %>%
+    mutate(functional_clone_id = paste0('clone_', cur_group_id()),
+           functional_clone_count = n())
+
+meta <- cbind(meta, seu@reductions$harmony_umap@cell.embeddings)
+
+meta = meta[!(meta$junction_aa_VDJ_main == '' & meta$junction_aa_VJ_main == ''),]
+meta = meta[!(meta$junction_aa_VDJ_main == 'None' | meta$junction_aa_VJ_main == 'None'),]
+
+meta$updated_sample = ifelse(str_detect(meta$sample,pattern = 'Donor'), meta$sample, 'PBMC')
+
+```
+
+## ggplot themes
+
+```{r}
+
+
+theme_umap = theme(panel.background = element_blank(),
+                   panel.border = element_rect(fill=NA, color='#000000', linewidth = 0.5), 
+                   panel.grid = element_blank(),
+                   axis.ticks = element_blank(), 
+                   axis.text=element_blank(), 
+                   axis.title=element_blank())
+
+theme_plots = theme(panel.background = element_blank(),
+                   panel.border = element_rect(fill=NA, color='#000000', linewidth = 0.5))
+
+theme_umap_cont = theme_umap + theme(legend.position = 'inside',
+                   legend.position.inside = c(0.9,0.2), 
+                   legend.background = element_blank(),
+                   legend.key.height = unit(0.2,units='cm'),
+                   legend.key.width = unit(0.3,units='cm'))
+
+```
+
+## Plots
+
+### UMAP suing seurat cluster locations
+
+```{r}
+temp = meta
+label <- temp %>% group_by(seurat_clusters) %>% summarise(harmonyumap_1 = median(harmonyumap_1),
+                                                       harmonyumap_2 = median(harmonyumap_2))
+p1 = ggplot(temp,aes(x=harmonyumap_1, y=harmonyumap_2)) + 
+    geom_point(aes(color=seurat_clusters, fill=seurat_clusters)) + 
+    coord_fixed()+
+    geom_text(data=label, aes(label=seurat_clusters), size=6) + 
+    guides(color = guide_legend(ncol=2, title="Seurat Clusters", 
+                                override.aes = list(size=5, shape=21, color='black')),
+           fill = guide_legend(title="Seurat Clusters"), 
+           override.aes = list(size=5)) + 
+    theme_umap+theme(legend.position = 'inside',
+                    legend.position.inside = c(0.9,0.2), 
+                    legend.background = element_blank(),
+                    legend.key.height = unit(0.4,units='cm'),
+                    legend.key.width = unit(0.5,units='cm'))+
+    scale_color_brewer(palette='RdYlBu') +
+    scale_fill_brewer(palette='RdYlBu')
+p1
+#ggsave(p1, filename='plots/final/p1_UMAP.pdf', scale = 2)
+
+```
+### UMAP showing location of cells at different timepoints and conditions
+
+```{r}
+temp <- meta
+p3 = list()
+temp$updated_treatment = case_when(meta$updated_sample == 'PBMC' ~ 'HIV+ and No Cancer', 
+            meta$updated_sample != 'PBMC' & meta$time == 'No dose' ~ 'HIV+ and No Treatment',
+            meta$updated_sample != 'PBMC' & meta$time == 'Single dose' ~ 'HIV+ with Single Dose a-PD1',
+            meta$updated_sample != 'PBMC' & meta$time == 'Multi dose' ~ 'HIV+ with Multi Doses a-PD1')
+
+for(treatment in unique(temp$updated_treatment)){
+    
+    p3[[treatment]] = ggplot(temp[!temp$updated_sample %in% c('Donor 54', 'Donor 48'),],
+                        aes(x=harmonyumap_1, y=harmonyumap_2)) + 
+        geom_point(data=temp[!temp$updated_sample %in% c('Donor 54', 'Donor 48'),
+                             c('harmonyumap_1', 'harmonyumap_2')],color='#bdbdbd') + 
+        ggpseudocolor::geom_pseudocolor(data=temp[temp$updated_treatment == treatment &
+                                                      !temp$updated_sample %in% c('Donor 54', 
+                                                                                  'Donor 48'),],
+                                        adjust=1.5, 
+                                        size=0.8) + 
+        scale_color_distiller(palette='Spectral') +   
+        coord_fixed(1) + 
+        theme_umap_cont + 
+        #theme(legend.ticks = element_blank(),
+        #      legend.text = element_blank(),
+        #      legend.title = element_blank(),
+        #      legend.frame = element_rect(color = 'black',
+        #                                  fill = NA, 
+        #                                  linewidth = 0.1),
+        #      plot.title = element_text(hjust=0.5, size = 12)) +
+        ggtitle(treatment)
+    
+}
+
+#for(p in names(p3)){
+#    ggsave(p3[[p]], filename=paste0('plots/final/',p,'_UMAP.pdf'), scale = 2)
+#    }
+
+x = wrap_plots(p3, nrow = 2)
+x
+
+
+```
+
+```{r}
+
+temp = meta
+se = function(x){sqrt(var(x)/length(x))}
+freq = temp[!temp$updated_sample %in% c('PBMC', 'Donor 54', 'Donor 48'),] %>% 
+    group_by(updated_sample,time, seurat_clusters) %>% 
+    summarise(count=n()) %>% 
+    group_by(updated_sample, time)  %>% 
+    mutate(freq = count/sum(count)) %>% 
+    group_by(seurat_clusters, time) %>% 
+    summarise(mean=mean(freq),
+              sd=se(freq)) %>% 
+    group_by(time) %>% arrange(desc(seurat_clusters)) %>% 
+    mutate(cumsum=cumsum(mean),
+           mean=mean/max(cumsum)) %>% 
+    mutate(upper=(cumsum+sd)/max(cumsum),
+           lower=(cumsum-sd)/max(cumsum),
+           cumsum=cumsum/max(cumsum))
+
+p4=ggplot(freq %>% arrange(desc(mean)), 
+       aes(x=time, y=mean)) + 
+    geom_col(aes(fill=seurat_clusters), color='black', width=0.5) +
+    geom_errorbar(aes(ymin = lower, ymax = upper, 
+                      group=seurat_clusters), width = 0.1, color='#000000') + 
+    theme_plots + 
+    theme(aspect.ratio = 1.5/1,
+          axis.text.x = element_text(angle=60, hjust=1), 
+          axis.title.y = element_text(size = 8), 
+          panel.grid.major.y = element_line(linewidth = 0.3, 
+                                            colour = '#bdbdbd', 
+                                            linetype = 'solid'),
+          , 
+          panel.grid.minor.y = element_line(linewidth = 0.3, 
+                                            colour = '#bdbdbd', 
+                                            linetype = 'dotted')) + 
+    ylab('Mean Frequency per Cluster') + xlab('') + 
+    guides(fill = guide_legend(ncol=2)) + 
+    scale_y_continuous(expand = c(0,0,0.04,0), 
+                       breaks = seq(0,1,0.2), 
+                       minor_breaks = seq(0.1,0.9,0.2)) +
+    scale_fill_brewer(palette='RdYlBu')
+
+p4
+```
+
+
+```{r}
+temp <- meta[!meta$updated_sample %in% c('Donor 54', 'Donor 48'),]
+temp <- temp %>% group_by(sample, functional_clone_id) %>%
+    summarise(functional_clone_count = n()) %>%
+    group_by(sample) %>% mutate(freq = functional_clone_count/sum(functional_clone_count),
+                                expanded = freq > 0.02 & functional_clone_count > 1 )
+
+
+temp$updated_sample = temp$sample
+temp[which(str_detect(temp$sample, pattern = 'PBMC')), 'updated_sample'] = 'PBMC'
+
+
+p5 = ggplot(temp,
+       aes(x=updated_sample, y=functional_clone_count)) +
+    geom_point(position=position_jitter(height = 0,width=0.3), shape=21, aes(fill=expanded,size=expanded, alpha=expanded)) +
+    theme(panel.background = element_blank(),
+          panel.border = element_rect(fill=NA, colour = 'black', linewidth = 1),
+          axis.text.x = element_text(angle=60, hjust=1), aspect.ratio = 1.5/1) +
+    guides(fill=guide_legend(title="Expanded (< 2%)")) +
+    ylab('Clone Count') +
+    xlab('') +
+    scale_y_continuous(breaks=seq(0,120,20)) + 
+  scale_fill_manual(values = c('#fc9272', '#d9d9d9'),
+                    breaks = c(T, F))+ 
+  scale_size_manual(values = c(3, 3),
+                    breaks = c(T, F))+ 
+  scale_alpha_manual(values = c(1, 1),
+                    breaks = c(T, F))
+p5
+#ggsave(p5, filename='plots/final/enumeration_expansion.pdf', scale=0.5)
+expanded_clones = temp[temp$expanded == T,]
+unique(expanded_clones$functional_clone_id)
+meta$updated_expanded = meta$functional_clone_id %in% unique(expanded_clones$functional_clone_id)
+
+```
+
+```{r}
+temp <- meta[!meta$updated_sample %in% c('Donor 54', 'Donor 48'),]
+
+p5 = ggplot(temp %>% arrange(updated_expanded),
+       aes(x=harmonyumap_1, y=harmonyumap_2)) +
+    geom_point(data=temp[,c('harmonyumap_1', 'harmonyumap_2')], color='#d9d9d9') +
+    geom_point(data=temp[which(temp$updated_expanded == T),], color='#fc9272', size=1) +
+    theme(axis.text.y = element_blank(),
+          panel.background = element_blank(), axis.ticks.y = element_blank(),
+          panel.border = element_rect(fill=NA, colour = '#000000', linewidth=1)) +
+    coord_fixed()
+p5
+#ggsave(p5, filename='plots/final/UMAP_expanded.pdf', scale=2)
+```
+
+
+```{r}
+
+temp = meta
+se = function(x){sqrt(var(x)/length(x))}
+freq = temp[!temp$updated_sample %in% c('PBMC', 'Donor 54', 'Donor 48'),] %>% 
+    group_by(updated_sample, seurat_clusters, updated_expanded) %>% 
+    summarise(count=n()) %>% 
+    group_by(updated_sample, updated_expanded)  %>% 
+    mutate(freq = count/sum(count)) %>% 
+    group_by(seurat_clusters, updated_expanded) %>% 
+    summarise(mean=mean(freq),
+              sd=se(freq)) %>% 
+    group_by(updated_expanded) %>% arrange(desc(seurat_clusters)) %>% 
+    mutate(cumsum=cumsum(mean),
+           mean=mean/max(cumsum)) %>% 
+    mutate(upper=(cumsum+sd)/max(cumsum),
+           lower=(cumsum-sd)/max(cumsum),
+           cumsum=cumsum/max(cumsum))
+
+p6 <- ggplot(freq %>% arrange(desc(mean)), 
+       aes(x=updated_expanded, y=mean)) + 
+    geom_col(aes(fill=seurat_clusters), color='black', width=0.5) +
+    geom_errorbar(aes(ymin = lower, ymax = upper, 
+                      group=seurat_clusters), width = 0.1, color='#000000') + 
+    theme_plots + 
+    theme(aspect.ratio = 1.5/1,
+          axis.text.x = element_text(angle=60, hjust=1), 
+          axis.title.y = element_text(size = 8), 
+          panel.grid.major.y = element_line(linewidth = 0.3, 
+                                            colour = '#bdbdbd', 
+                                            linetype = 'solid'),
+          , 
+          panel.grid.minor.y = element_line(linewidth = 0.3, 
+                                            colour = '#bdbdbd', 
+                                            linetype = 'dotted')) + 
+    ylab('Mean Frequency per Cluster') + xlab('') + 
+    guides(fill = guide_legend(ncol=2)) + 
+    scale_y_continuous(expand = c(0,0,0.04,0), 
+                       breaks = seq(0,1,0.2), 
+                       minor_breaks = seq(0.1,0.9,0.2)) +
+    scale_fill_brewer(palette='RdYlBu')
+p6
+#ggsave(p6, filename='plots/final/expanded_props.pdf')
+
+```
+
+```{r}
+temp = meta %>% filter(str_detect(sample, pattern='Donor'))
+temp <- temp %>% filter(!sample %in% c('Donor 48', 'Donor 54') & !is.na(dosage))
+
+temp = temp %>% filter(updated_expanded == T) %>% group_by(functional_clone_id, time, sample) %>% summarise(count=n())
+
+temp$shape <- case_when(temp$sample == "Donor 56" ~ 23, 
+                        temp$sample == "Donor 62" ~ 13, 
+                        temp$sample == "Donor 64" ~ 15, 
+                        temp$sample == "Donor 41" ~ 11, 
+                        temp$sample == "Donor 38" ~ 6, 
+                        temp$sample == "Donor 49" ~ 5)
+clone_order = temp %>% arrange(sample, time) %>% pull(functional_clone_id) %>% unique()
+p = ggplot(temp, aes(x=time, y=factor(functional_clone_id, levels = clone_order))) +
+  geom_path(aes(group=functional_clone_id), color='#d9d9d9', linetype='dotted') +
+  ggstar::geom_star(aes(starshape = shape, fill = factor(sample)), size=2, starstroke=0.5) +
+  #geom_point(aes(fill=sample), shape=21, color='#000000', size=3) +
+    scale_fill_brewer(palette='RdYlBu') + theme_plots +
+  theme(aspect.ratio = 3/1, 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), axis.text.x = element_text(angle=60, hjust=1)) +
+  ylab('Unique Clone') + xlab('')
+p
+#ggsave(p, filename='plots/final/clone_points_time.pdf', scale=2)
+
+```
+
+
+
+```{r}
+temp = meta %>% filter(str_detect(sample, pattern='Donor'))
+temp <- temp %>% filter(!sample %in% c('Donor 48', 'Donor 54') & !is.na(dosage)) %>% filter(updated_expanded == T)
+temp$isBaseline = temp$time == 'No dose'
+
+temp = temp %>% group_by(sample, time) %>% mutate(cell_count = n(),
+                                                  unique_clone_freq = n_distinct(functional_clone_id, na.rm=T)/cell_count) %>% ungroup()
+
+
+temp = temp %>% group_by(functional_clone_id, sample,
+                         time, updated_expanded) %>%
+  summarise(count=n()) %>%
+  group_by(time, sample) %>%
+  mutate(freq = count/sum(count))
+
+z = full_join(temp[temp$time == 'No dose',c('functional_clone_id', 'sample', 'time', 'updated_expanded', 'count', 'freq')],
+           temp[temp$time == 'Single dose',c('functional_clone_id', 'sample', 'time', 'updated_expanded', 'count', 'freq')],
+           by = c('functional_clone_id', 'sample', 'updated_expanded'), suffix = c('_baseline','_single')) 
+
+z = full_join(z,
+           temp[temp$time == 'Multi dose',c('functional_clone_id', 'sample', 'time', 'updated_expanded', 'count', 'freq')],
+           by = c('functional_clone_id', 'sample', 'updated_expanded')) %>% dplyr::rename(count_multi=count, freq_multi=freq)
+
+z <- z %>% mutate_at(c('count_baseline', 'count_single', 
+                  'freq_baseline', 'freq_single', 
+                  'count_multi', 'freq_multi'), ~replace(., is.na(.), 0))
+
+
+p1 = (ggplot(z, aes(x=freq_baseline, y=freq_single))|
+    ggplot(z, aes(x=freq_baseline, y=freq_multi))|
+    ggplot(z, aes(x=freq_single, y=freq_multi))) &  geom_abline(color='#000000', linetype='dashed', linewidth=0.3) &
+  theme_plots & geom_point(color='#bdbdbd', size=1) & xlim(-0.01,0.75) & ylim(-0.01,0.75) & coord_fixed(1)
+p1
+
+z = z %>% mutate(diff_baseline_single = freq_baseline - freq_single,
+                 diff_baseline_multi = freq_baseline - freq_multi,
+                 diff_single_multi = freq_single - freq_multi )
+
+
+          
+
+l1 = data.frame(case_when(z$diff_baseline_single > 0 ~ 'right', z$diff_baseline_single < 0 ~ 'left', T ~ 'middle') %>% table(),
+                pos=c(-0.8,0,0.8))
+l2 = data.frame(case_when(z$diff_baseline_multi > 0 ~ 'right', z$diff_baseline_multi < 0 ~ 'left', T ~ 'middle') %>% table(),
+                pos=c(-0.8,0,0.8))
+l3 = data.frame(case_when(z$diff_single_multi > 0 ~ 'right', z$diff_single_multi < 0 ~ 'left', T ~ 'middle') %>% table(),
+                pos=c(-0.8,0.8))
+
+
+p2 = (ggplot(z, aes(x=diff_baseline_single, y='1')) + geom_text(data=l1, aes(x=pos, label=Freq)) |
+ggplot(z, aes(x=diff_baseline_multi, y='1')) + geom_text(data=l2, aes(x=pos, label=Freq)) |
+ggplot(z, aes(x=diff_single_multi, y='1')) + geom_text(data=l3, aes(x=pos, label=Freq)) ) & 
+  theme_plots & 
+  theme(aspect.ratio = 1/5, axis.title.y = element_blank(), axis.ticks.y = element_blank(), axis.text.y = element_blank()) & 
+  geom_point(color='#bdbdbd', stroke=0.5, position=position_jitter(width = 0, height = 0), size=1) & 
+  geom_vline(xintercept=0, linetype='dashed', linewidth=0.5) & xlim(-1, 1)
+
+p2
+#ggsave(p1, filename='plots/final/prop_comp.pdf')
+#ggsave(p2, filename='plots/final/prop_comp_count.pdf')
+
+```
+
+```{r}
+
+temp = meta %>% filter(str_detect(sample, pattern='Donor'))
+temp <- temp %>% filter(!sample %in% c('Donor 48', 'Donor 54') & !is.na(dosage))
+temp$isBaseline = temp$time == 'No dose'
+
+temp = temp %>% group_by(sample, time) %>% mutate(cell_count = n(),
+                                                  unique_clone_freq = n_distinct(functional_clone_id, na.rm=T)/cell_count) %>% ungroup()
+temp = temp %>% group_by(functional_clone_id, sample,
+                         isBaseline, updated_expanded) %>%
+  summarise(count=n()) %>%
+  group_by(isBaseline, sample) %>%
+  mutate(freq = count/sum(count))
+
+temp = full_join(temp[temp$isBaseline == T,c('functional_clone_id', 'sample', 'isBaseline', 'updated_expanded', 'count', 'freq')],
+           temp[temp$isBaseline == F,c('functional_clone_id', 'sample', 'isBaseline', 'updated_expanded', 'count', 'freq')],
+           by = c('functional_clone_id', 'sample', 'updated_expanded'), suffix = c('_baseline','_treatment')) %>%
+  mutate_at(c('count_baseline', 'count_treatment', 'freq_baseline', 'freq_treatment'), ~replace(., is.na(.), 0))
+
+
+temp$shared_time = temp$count_baseline > 0 & temp$count_treatment > 0
+
+labels = temp %>% filter(shared_time == T) %>%
+  mutate(diff = freq_baseline > freq_treatment) %>%
+  group_by(diff) %>%
+  summarise(count=n(),
+            freq_baseline = max(freq_baseline)/1.5,
+            freq_treatment = 0.15)
+
+ggplot(temp %>% arrange(updated_expanded), aes(x=freq_baseline, y=freq_treatment)) +
+  geom_point(aes(fill=shared_time), shape=21, size=2) +
+  geom_text(data=labels, aes(label=count))+
+  geom_abline(color='#000000', linetype='dashed', linewidth=0.3) +
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(fill=NA, colour = '#000000', linewidth=1),
+        axis.text.x = element_text(angle=60, hjust=1), aspect.ratio = 1) +
+  scale_fill_manual(values=c('#fb6a4a', '#d9d9d9'),
+                     breaks = c(T, F)) +
+  scale_x_continuous(limits = c(0,0.5),expand = c(0.01, 0.01))+
+  scale_y_continuous(limits = c(0,0.5),expand = c(0.01, 0.01)) +
+  xlab('Clonal Frequency at Baseline') +
+  ylab('Clonal Frequency after Treatment')
+```
+
+
+```{r}
+temp = meta %>% filter(str_detect(sample, pattern='Donor'))
+temp <- temp %>% filter(!sample %in% c('Donor 48', 'Donor 54') & !is.na(dosage))
+temp$isBaseline = temp$time == 'No dose'
+
+temp = temp %>% group_by(sample, time) %>% mutate(cell_count = n(),
+                                                  unique_clone_freq = n_distinct(functional_clone_id, na.rm=T)/cell_count) %>% ungroup()
+
+temp = temp %>% group_by(functional_clone_id, sample,
+                         isBaseline, updated_expanded) %>%
+  summarise(count=n()) %>%
+  group_by(isBaseline, sample) %>%
+  mutate(freq = count/sum(count))
+
+temp = full_join(temp[temp$isBaseline == T,c('functional_clone_id', 'sample', 'isBaseline', 'updated_expanded', 'count', 'freq')],
+           temp[temp$isBaseline == F,c('functional_clone_id', 'sample', 'isBaseline', 'updated_expanded', 'count', 'freq')],
+           by = c('functional_clone_id', 'sample', 'updated_expanded'), suffix = c('_baseline','_treatment')) %>%
+  mutate_at(c('count_baseline', 'count_treatment', 'freq_baseline', 'freq_treatment'), ~replace(., is.na(.), 0))
+
+
+temp$shared_time = temp$count_baseline > 0 & temp$count_treatment > 0
+
+temp$high_baseline = temp$freq_baseline > temp$freq_treatment
+temp = temp %>% filter(updated_expanded)
+table(temp$sample, temp$high_baseline)
+
+
+
+
+
+
+```
+
+```{r}
+set.seed(42)
+temp <- meta %>% filter(functional_clone_id %in% unique(expanded_clones$functional_clone_id)) %>%
+    group_by(sample, functional_clone_id,
+             seurat_clusters, .drop=F) %>%
+    summarise(count=n()) %>%
+    group_by(sample, functional_clone_id) %>%
+    mutate(freq = count/sum(count), id = paste0(sample, '|', functional_clone_id)) %>% ungroup()
+
+
+
+mat <- temp[, c('id', 'seurat_clusters', 'freq')] %>%
+    tidyr::pivot_wider(names_from = seurat_clusters, values_from = freq, values_fill = 0) %>%
+    column_to_rownames("id") %>%
+    as.matrix()
+
+ann_df <- temp %>%
+    select(id, sample) %>%
+    distinct() %>%
+    column_to_rownames("id")
+
+# Perform hierarchical clustering
+d <- dist(mat)        # compute distance matrix
+hc <- hclust(d)       # perform hierarchical clustering
+clusts = cutree(hc, k = 7)
+mat = t(mat)
+# Plot dendrogram
+col_fun <- circlize::colorRamp2(c(0, max(mat)), c("#fff5f0", "#a50f15"))
+top_anno <- ComplexHeatmap::columnAnnotation(
+    Sample = ann_df$sample %>% str_remove(pattern = ' [C-G]'),
+    show_annotation_name = TRUE,
+    col = list(Sample = c("Donor 38" = "#e41a1c",
+                          "Donor 41" = "#377eb8",
+                          "Donor 48" = "#4daf4a",
+                          "Donor 49" = "#984ea3",
+                          "Donor 54" = "#ff7f00",
+                          "Donor 56" = "#ffff33",
+                          "Donor 62" = "#084594",
+                          "Donor 64" = "#a65628",
+                          "PBMC" = "#f1f1f1")))
+
+g = draw(ComplexHeatmap::Heatmap(mat,
+        name = "Frequency",
+        col = col_fun,
+        cluster_rows = T,
+        cluster_columns = T,
+        show_row_names = T,
+        show_column_names = F,
+        border = T,
+        column_km=7,
+        column_dend_reorder = T,
+        row_dend_reorder = T,
+        top_annotation =top_anno))
+
+#saveRDS(g, 'denrogram.rds')
+```
+
+```{r}
+set.seed(42)
+temp <- meta %>% filter(functional_clone_id %in% unique(expanded_clones$functional_clone_id)) %>%
+    group_by(sample, functional_clone_id,
+             seurat_clusters, .drop=F) %>%
+    summarise(count=n()) %>%
+    group_by(sample, functional_clone_id) %>%
+    mutate(freq = count/sum(count), id = paste0(sample, '|', functional_clone_id)) %>% ungroup()
+
+
+
+mat <- temp[, c('id', 'seurat_clusters', 'freq')] %>%
+    tidyr::pivot_wider(names_from = seurat_clusters, values_from = freq, values_fill = 0) %>%
+    column_to_rownames("id") %>%
+    as.matrix()
+
+ann_df <- temp %>%
+    select(id, sample) %>%
+    distinct() %>%
+    column_to_rownames("id")
+
+# Perform hierarchical clustering
+d <- dist(mat)        # compute distance matrix
+hc <- hclust(d)       # perform hierarchical clustering
+clusts = cutree(hc, k = 7)
+mat = t(mat)
+g <- readRDS('denrogram.rds')
+
+#pdf(width = 10, height = 5, file = 'plots/final/heatmap.pdf')
+#g
+#dev.off()
+
+z = data.frame(colnames(mat))
+z$idx <- rownames(z)
+check = column_order(g) %>% lapply(function(x){
+    z[which(z$idx %in% x),]
+
+    })
+
+names(check) = paste0('cluster_', names(check))
+
+for(name in names(check)){
+
+    check[[name]][['cluster']] = name
+    }
+
+clusters = do.call('rbind', check)
+
+clusters$functional_clone_id = clusters$colnames.mat. %>% str_split_i(pattern = '\\|', i=2)
+
+temp = left_join(temp, clusters, by='functional_clone_id')
+temp <- temp %>% group_by(functional_clone_id) %>% mutate(fidelity = max(freq))
+
+temp[temp$sample %>% str_detect(pattern ='PBMC'), 'sample'] = 'PBMC'
+temp$source = str_split_i(temp$sample, pattern = ' ', i=1)
+
+p = ggplot(temp[!duplicated(temp$functional_clone_id),],
+       aes(x=factor(cluster, levels =c('cluster_2', 'cluster_1', 'cluster_4', 'cluster_5',
+                                       'cluster_6', 'cluster_7', 'cluster_3')), y=fidelity)) +
+    geom_boxplot(width=0.3)+
+    geom_point(position=position_jitter(width=0.1), shape=21, aes(fill=sample), size=2) +
+    scale_fill_manual(values = c("#e41a1c","#377eb8","#4daf4a","#984ea3",
+                       "#ff7f00","#ffff33","#084594","#a65628","#f1f1f1"),
+                       breaks = c("Donor 38","Donor 41","Donor 48","Donor 49",
+                                  "Donor 54","Donor 56","Donor 62","Donor 64","PBMC")) +
+    theme(panel.background = element_blank(),
+          panel.border = element_rect(fill=NA, color='black', linewidth=1),
+          aspect.ratio = 1/4) + xlab('') + ylab('Fidelity')
+
+p
+#ggsave(p, filename = 'plots/final/fidelity.pdf', scale=1)
+```
+
+
+```{r}
+temp <- meta %>% filter(functional_clone_id %in% unique(expanded_clones$functional_clone_id)) %>%
+    group_by(sample, functional_clone_id, dosage,
+             seurat_clusters, .drop=F) %>%
+    summarise(count=n()) %>%
+    group_by(sample, functional_clone_id, dosage) %>%
+    mutate(freq = count/sum(count), id = paste0(sample, '|', functional_clone_id)) %>% ungroup()
+temp <- temp %>% group_by(functional_clone_id, dosage) %>% mutate(fidelity = max(freq))
+temp$dosage <- factor(temp$dosage, c('None', 'Single','Multiple'))
+temp$functional_clone_id <- factor(temp$functional_clone_id,
+                                   temp %>% arrange(dosage, desc(count)) %>% pull(functional_clone_id) %>% unique())
+
+temp = left_join(temp, clusters, by = 'functional_clone_id')
+temp$functional_clone_id <- factor(temp$functional_clone_id, temp %>% arrange(cluster) %>% pull(functional_clone_id) %>% unique())
+#temp = temp %>% filter(count > 0)
+
+
+ggplot(temp[!is.na(temp$dosage),], aes(x=dosage, y=functional_clone_id)) + 
+    geom_line(aes(group=functional_clone_id)) + 
+    geom_point(shape=21, size=2,
+               aes(fill=fidelity)) +
+
+    theme(panel.background = element_blank(), axis.ticks.y = element_blank(),
+          panel.border = element_rect(fill=NA, colour = '#000000', linewidth=1),
+          aspect.ratio = 3/1) +
+    scale_fill_distiller(palette = 'Spectral') +
+    ylab('Clone') + xlab('') -> p
+p
+#ggsave(p, filename='plots/final/clones_fidelity.pdf', scale=2)
+```
+
+
+
+```{r}
+
+
+temp = meta %>% filter(str_detect(sample, pattern='Donor'))
+temp <- temp %>% filter(!sample %in% c('Donor 48', 'Donor 54') & !is.na(dosage))
+#temp$isBaseline = temp$time == 'No dose'
+
+temp = temp %>% 
+  group_by(sample, time) %>% mutate(cell_count = n(),
+                                    unique_clone_freq = n_distinct(functional_clone_id, na.rm=T) / cell_count) %>% 
+  ungroup()
+
+temp = temp %>% group_by(functional_clone_id, sample,
+                         time, updated_expanded) %>%
+  summarise(count=n()) %>%
+  group_by(time, sample) %>%
+  mutate(freq = count/sum(count))
+
+temp = full_join(temp[temp$time == 'No dose',c('functional_clone_id', 'sample', 'time', 'updated_expanded', 'count', 'freq')],
+           temp[temp$time == 'Single dose',c('functional_clone_id', 'sample', 'time', 'updated_expanded', 'count', 'freq')],
+           by = c('functional_clone_id', 'sample', 'updated_expanded'), suffix = c('_baseline','_treatment')) %>%
+  mutate_at(c('count_baseline', 'count_treatment', 'freq_baseline', 'freq_treatment'), ~replace(., is.na(.), 0))
+temp$shared_time = temp$count_baseline > 0 & temp$count_treatment > 0
+
+labels = temp %>% filter(shared_time == T) %>%
+  mutate(diff = freq_baseline > freq_treatment) %>%
+  group_by(diff) %>%
+  summarise(count=n(),
+            freq_baseline = max(freq_baseline)/1.5,
+            freq_treatment = 0.15)
+
+ggplot(temp %>% arrange(updated_expanded), aes(x=freq_baseline, y=freq_treatment)) +
+  geom_abline(color='#000000', linetype='dashed', linewidth=0.3) +
+  geom_point(shape=21,aes(fill=shared_time)) +
+  geom_text(data=labels, aes(label=count))+
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(fill=NA, colour = '#000000', linewidth=1),
+        axis.text.x = element_text(angle=60, hjust=1)) +
+  scale_fill_manual(values=c('#fb6a4a', '#d9d9d9'),
+                     breaks = c(T, F)) +
+  scale_x_continuous(expand = c(0.01, 0.01))+
+  scale_y_continuous(expand = c(0.01, 0.01)) +
+  xlab('Clonal Frequency at Baseline') +
+  ylab('Clonal Frequency after Treatment')
+
+temp$count = temp$count_baseline + temp$count_treatment
+temp  = temp %>% ungroup()
+comp =  list( c("Higher at baseline", "Higher post-treatment"))
+
+z = temp %>% filter(updated_expanded == T)
+z <- z%>% mutate(diff = ifelse(freq_baseline > freq_treatment,
+                                                     'Higher at baseline',
+                                                     'Higher post-treatment'))
+z$diff <- z$diff %>% factor()
+z$sample <- z$sample %>% factor()
+z = z %>% group_by(diff, sample, .drop=F) %>% summarise(count=n())
+
+ggplot(z,aes(x=diff, y=count))+
+  geom_bar(width=0.5, stat = "summary", fill=NA, color='black') +
+  geom_path(aes(group=sample),
+            position=position_jitter(height = 0, width = 0.2, seed = 21),
+            color='#bdbdbd', linetype='dashed') +
+  geom_point(aes(fill=sample), shape=21, size=3,
+             position=position_jitter(height = 0, width = 0.2, seed = 21)) +
+  scale_y_continuous(expand = c(0,0,0.1,0))+
+  theme(panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        axis.text.x = element_text(angle=60, hjust=1),
+        aspect.ratio = 2/1) +
+  stat_compare_means(comparisons = comp, paired = T, method = 't.test') +
+  xlab('') + ggtitle('Non-single Clones') + ylab('Number of Clones') -> p
+
+ggsave(p, filename='output/250910_baselineVssingle_expanded.pdf', width=3, height=5)
+
+
+
+z = temp %>% filter(temp$count_baseline > 0 & temp$count_treatment > 0)
+z <- z%>% mutate(diff = ifelse(freq_baseline > freq_treatment,
+                                                     'Higher at baseline',
+                                                     'Higher post-treatment'))
+z$diff <- z$diff %>% factor()
+z$sample <- z$sample %>% factor()
+z = z %>% group_by(diff, sample, .drop=F) %>% summarise(count=n())
+
+ggplot(z,aes(x=diff, y=count))+
+  geom_bar(width=0.5, stat = "summary", fill=NA, color='black') +
+  geom_path(aes(group=sample),
+            position=position_jitter(height = 0, width = 0.2, seed = 21),
+            color='#bdbdbd', linetype='dashed') +
+  geom_point(aes(fill=sample), shape=21, size=3,
+             position=position_jitter(height = 0, width = 0.2, seed = 21)) +
+  scale_y_continuous(expand = c(0,0,0.1,0))+
+  theme(panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        axis.text.x = element_text(angle=60, hjust=1),
+        aspect.ratio = 2/1) +
+  stat_compare_means(comparisons = comp, paired = T, method = 't.test') +
+  xlab('') + ggtitle('Non-single Clones') + ylab('Number of Clones') -> p
+
+ggsave(p, filename='output/250910_baselineVssingle_shared.pdf', width=3, height=5)
+
+
+
+z = temp %>% filter(shared_time == F)
+z <- z%>% mutate(diff = ifelse(freq_baseline > freq_treatment,
+                                                     'Higher at baseline',
+                                                     'Higher post-treatment'))
+z$diff <- z$diff %>% factor()
+z$sample <- z$sample %>% factor()
+z = z %>% group_by(diff, sample, .drop=F) %>% summarise(count=n())
+
+ggplot(z,aes(x=diff, y=count))+
+  geom_bar(width=0.5, stat = "summary", fill=NA, color='black') +
+  geom_path(aes(group=sample),
+            position=position_jitter(height = 0, width = 0.2, seed = 21),
+            color='#bdbdbd', linetype='dashed') +
+  geom_point(aes(fill=sample), shape=21, size=3,
+             position=position_jitter(height = 0, width = 0.2, seed = 21)) +
+  scale_y_continuous(expand = c(0,0,0.1,0))+
+  theme(panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        axis.text.x = element_text(angle=60, hjust=1),
+        aspect.ratio = 2/1) +
+  stat_compare_means(comparisons = comp, paired = T, method = 't.test') +
+  xlab('') + ggtitle('Non-single Clones') + ylab('Number of Clones') -> p
+
+p
+
+```
+
+
+```{r}
+
+
+temp = meta %>% filter(str_detect(sample, pattern='Donor'))
+temp <- temp %>% filter(!sample %in% c('Donor 48', 'Donor 54') & !is.na(dosage))
+#temp$isBaseline = temp$time == 'No dose'
+
+temp = temp %>% 
+  group_by(sample, time) %>% mutate(cell_count = n(),
+                                    unique_clone_freq = n_distinct(functional_clone_id, na.rm=T) / cell_count) %>% 
+  ungroup()
+
+temp = temp %>% group_by(functional_clone_id, sample,
+                         time, updated_expanded) %>%
+  summarise(count=n()) %>%
+  group_by(time, sample) %>%
+  mutate(freq = count/sum(count))
+
+temp = full_join(temp[temp$time == 'No dose',c('functional_clone_id', 'sample', 'time', 'updated_expanded', 'count', 'freq')],
+           temp[temp$time == 'Multi dose',c('functional_clone_id', 'sample', 'time', 'updated_expanded', 'count', 'freq')],
+           by = c('functional_clone_id', 'sample', 'updated_expanded'), suffix = c('_baseline','_treatment')) %>%
+  mutate_at(c('count_baseline', 'count_treatment', 'freq_baseline', 'freq_treatment'), ~replace(., is.na(.), 0))
+
+temp$shared_time = temp$count_baseline > 0 & temp$count_treatment > 0
+
+labels = temp %>% filter(shared_time == T) %>%
+  mutate(diff = freq_baseline > freq_treatment) %>%
+  group_by(diff) %>%
+  summarise(count=n(),
+            freq_baseline = max(freq_baseline)/1.5,
+            freq_treatment = 0.15)
+
+ggplot(temp %>% arrange(updated_expanded), aes(x=freq_baseline, y=freq_treatment)) +
+  geom_abline(color='#000000', linetype='dashed', linewidth=0.3) +
+  geom_point(shape=21) +
+  geom_text(data=labels, aes(label=count))+
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(fill=NA, colour = '#000000', linewidth=1),
+        axis.text.x = element_text(angle=60, hjust=1)) +
+  scale_fill_manual(values=c('#fb6a4a', '#d9d9d9'),
+                     breaks = c(T, F)) +
+  scale_x_continuous(expand = c(0.01, 0.01))+
+  scale_y_continuous(expand = c(0.01, 0.01)) +
+  xlab('Clonal Frequency at Baseline') +
+  ylab('Clonal Frequency after Treatment')
+
+
+
+temp$count = temp$count_baseline + temp$count_treatment
+temp  = temp %>% ungroup()
+comp =  list( c("Higher at baseline", "Higher post-treatment"))
+
+z = temp %>% filter(updated_expanded == T)
+z <- z%>% mutate(diff = ifelse(freq_baseline > freq_treatment,
+                                                     'Higher at baseline',
+                                                     'Higher post-treatment'))
+z$diff <- z$diff %>% factor()
+z$sample <- z$sample %>% factor()
+z = z %>% group_by(diff, sample, .drop=F) %>% summarise(count=n())
+
+ggplot(z,aes(x=diff, y=count))+
+  geom_bar(width=0.5, stat = "summary", fill=NA, color='black') +
+  geom_path(aes(group=sample),
+            position=position_jitter(height = 0, width = 0.2, seed = 21),
+            color='#bdbdbd', linetype='dashed') +
+  geom_point(aes(fill=sample), shape=21, size=3,
+             position=position_jitter(height = 0, width = 0.2, seed = 21)) +
+  scale_y_continuous(expand = c(0,0,0.1,0))+
+  theme(panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        axis.text.x = element_text(angle=60, hjust=1),
+        aspect.ratio = 2/1) +
+  stat_compare_means(comparisons = comp, paired = T, method = 't.test') +
+  xlab('') + ggtitle('Non-single Clones') + ylab('Number of Clones') -> p
+
+p
+#ggsave(p, filename='output/250910_baselineVsmulti_expanded.pdf', width=3, height=5)
+
+
+
+z = temp %>% filter(temp$count_baseline > 0 & temp$count_treatment > 0)
+z <- z%>% mutate(diff = ifelse(freq_baseline > freq_treatment,
+                                                     'Higher at baseline',
+                                                     'Higher post-treatment'))
+z$diff <- z$diff %>% factor()
+z$sample <- z$sample %>% factor()
+z = z %>% group_by(diff, sample, .drop=F) %>% summarise(count=n())
+
+ggplot(z,aes(x=diff, y=count))+
+  geom_bar(width=0.5, stat = "summary", fill=NA, color='black') +
+  geom_path(aes(group=sample),
+            position=position_jitter(height = 0, width = 0.2, seed = 21),
+            color='#bdbdbd', linetype='dashed') +
+  geom_point(aes(fill=sample), shape=21, size=3,
+             position=position_jitter(height = 0, width = 0.2, seed = 21)) +
+  scale_y_continuous(expand = c(0,0,0.1,0))+
+  theme(panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        axis.text.x = element_text(angle=60, hjust=1),
+        aspect.ratio = 2/1) +
+  stat_compare_means(comparisons = comp, paired = T, method = 't.test') +
+  xlab('') + ggtitle('Non-single Clones') + ylab('Number of Clones') -> p
+
+#ggsave(p, filename='output/250910_baselineVsmulti_shared.pdf', width=3, height=5)
+
+
+
+
+
+z = temp %>% filter(shared_time == F)
+z <- z%>% mutate(diff = ifelse(freq_baseline > freq_treatment,
+                                                     'Higher at baseline',
+                                                     'Higher post-treatment'))
+z$diff <- z$diff %>% factor()
+z$sample <- z$sample %>% factor()
+z = z %>% group_by(diff, sample, .drop=F) %>% summarise(count=n())
+
+ggplot(z,aes(x=diff, y=count))+
+  geom_bar(width=0.5, stat = "summary", fill=NA, color='black') +
+  geom_path(aes(group=sample),
+            position=position_jitter(height = 0, width = 0.2, seed = 21),
+            color='#bdbdbd', linetype='dashed') +
+  geom_point(aes(fill=sample), shape=21, size=3,
+             position=position_jitter(height = 0, width = 0.2, seed = 21)) +
+  scale_y_continuous(expand = c(0,0,0.1,0))+
+  theme(panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        axis.text.x = element_text(angle=60, hjust=1),
+        aspect.ratio = 2/1) +
+  stat_compare_means(comparisons = comp, paired = T, method = 't.test') +
+  xlab('') + ggtitle('Non-single Clones') + ylab('Number of Clones') -> p
+
+p
+
+```
+
+
+```{r}
+
+
+temp = meta %>% filter(str_detect(sample, pattern='Donor'))
+temp <- temp %>% filter(!sample %in% c('Donor 48', 'Donor 54') & !is.na(dosage))
+temp$isBaseline = temp$time == 'No dose'
+
+temp = temp %>% group_by(sample, time) %>% mutate(cell_count = n(),
+                                                  unique_clone_freq = n_distinct(functional_clone_id, na.rm=T)/cell_count) %>% ungroup()
+
+temp = temp %>% group_by(functional_clone_id, sample,
+                         isBaseline, updated_expanded) %>%
+  summarise(count=n()) %>%
+  group_by(isBaseline, sample) %>%
+  mutate(freq = count/sum(count))
+
+temp = full_join(temp[temp$isBaseline == T,c('functional_clone_id', 'sample', 'isBaseline', 'updated_expanded', 'count', 'freq')],
+           temp[temp$isBaseline == F,c('functional_clone_id', 'sample', 'isBaseline', 'updated_expanded', 'count', 'freq')],
+           by = c('functional_clone_id', 'sample', 'updated_expanded'), suffix = c('_baseline','_treatment')) %>%
+  mutate_at(c('count_baseline', 'count_treatment', 'freq_baseline', 'freq_treatment'), ~replace(., is.na(.), 0))
+temp$shared_time = temp$count_baseline > 0 & temp$count_treatment > 0
+
+labels = temp %>% filter(shared_time == T) %>%
+  mutate(diff = freq_baseline > freq_treatment) %>%
+  group_by(diff) %>%
+  summarise(count=n(),
+            freq_baseline = max(freq_baseline)/1.5,
+            freq_treatment = 0.15)
+
+ggplot(temp %>% arrange(updated_expanded), aes(x=freq_baseline, y=freq_treatment)) +
+  geom_abline(color='#000000', linetype='dashed', linewidth=0.3) +
+  geom_point(aes(fill=updated_expanded), shape=21) +
+  geom_text(data=labels, aes(label=count))+
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(fill=NA, colour = '#000000', linewidth=1),
+        axis.text.x = element_text(angle=60, hjust=1)) +
+  scale_fill_manual(values=c('#fb6a4a', '#d9d9d9'),
+                     breaks = c(T, F)) +
+  scale_x_continuous(expand = c(0.01, 0.01))+
+  scale_y_continuous(expand = c(0.01, 0.01)) +
+  xlab('Clonal Frequency at Baseline') +
+  ylab('Clonal Frequency after Treatment')
+
+temp$count = temp$count_baseline + temp$count_treatment
+temp  = temp %>% ungroup()
+comp =  list( c("Higher at baseline", "Higher post-treatment"))
+
+z = temp %>% filter(updated_expanded == T)
+z <- z%>% mutate(diff = ifelse(freq_baseline > freq_treatment,
+                                                     'Higher at baseline',
+                                                     'Higher post-treatment'))
+z$diff <- z$diff %>% factor()
+z$sample <- z$sample %>% factor()
+z = z %>% group_by(diff, sample, .drop=F) %>% summarise(count=n())
+
+ggplot(z,aes(x=diff, y=count))+
+  geom_bar(width=0.5, stat = "summary", fill=NA, color='black') +
+  geom_path(aes(group=sample),
+            position=position_jitter(height = 0, width = 0.2, seed = 21),
+            color='#bdbdbd', linetype='dashed') +
+  geom_point(aes(fill=sample), shape=21, size=3,
+             position=position_jitter(height = 0, width = 0.2, seed = 21)) +
+  scale_y_continuous(expand = c(0,0,0.1,0))+
+  theme(panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        axis.text.x = element_text(angle=60, hjust=1),
+        aspect.ratio = 2/1) +
+  stat_compare_means(comparisons = comp, paired = T, method = 't.test') +
+  xlab('') + ggtitle('Non-single Clones') + ylab('Number of Clones') -> p
+
+#ggsave(p, filename='output/250910_baselineVsComb_expanded.pdf', width=3, height=5)
+
+
+
+z = temp %>% filter(temp$count_baseline > 0 & temp$count_treatment > 0)
+z <- z%>% mutate(diff = ifelse(freq_baseline > freq_treatment,
+                                                     'Higher at baseline',
+                                                     'Higher post-treatment'))
+z$diff <- z$diff %>% factor()
+z$sample <- z$sample %>% factor()
+z = z %>% group_by(diff, sample, .drop=F) %>% summarise(count=n())
+
+ggplot(z,aes(x=diff, y=count))+
+  geom_bar(width=0.5, stat = "summary", fill=NA, color='black') +
+  geom_path(aes(group=sample),
+            position=position_jitter(height = 0, width = 0.2, seed = 21),
+            color='#bdbdbd', linetype='dashed') +
+  geom_point(aes(fill=sample), shape=21, size=3,
+             position=position_jitter(height = 0, width = 0.2, seed = 21)) +
+  scale_y_continuous(expand = c(0,0,0.1,0))+
+  theme(panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        axis.text.x = element_text(angle=60, hjust=1),
+        aspect.ratio = 2/1) +
+  stat_compare_means(comparisons = comp, paired = T, method = 't.test') +
+  xlab('') + ggtitle('Non-single Clones') + ylab('Number of Clones') -> p
+
+#ggsave(p, filename='output/250910_baselineVsComb_shared.pdf', width=3, height=5)
+
+
+
+
+z = temp %>% filter(shared_time == F)
+z <- z%>% mutate(diff = ifelse(freq_baseline > freq_treatment,
+                                                     'Higher at baseline',
+                                                     'Higher post-treatment'))
+z$diff <- z$diff %>% factor()
+z$sample <- z$sample %>% factor()
+z = z %>% group_by(diff, sample, .drop=F) %>% summarise(count=n())
+
+ggplot(z,aes(x=diff, y=count))+
+  geom_bar(width=0.5, stat = "summary", fill=NA, color='black') +
+  geom_path(aes(group=sample),
+            position=position_jitter(height = 0, width = 0.2, seed = 21),
+            color='#bdbdbd', linetype='dashed') +
+  geom_point(aes(fill=sample), shape=21, size=3,
+             position=position_jitter(height = 0, width = 0.2, seed = 21)) +
+  scale_y_continuous(expand = c(0,0,0.1,0))+
+  theme(panel.background = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        axis.text.x = element_text(angle=60, hjust=1),
+        aspect.ratio = 2/1) +
+  stat_compare_means(comparisons = comp, paired = T, method = 't.test') +
+  xlab('') + ggtitle('Non-single Clones') + ylab('Number of Clones') -> p
+
+p
+#ggsave(p, filename='output/250910_baselineVsComb_shared.pdf', width=3, height=5)
+
+
+
+```
+
+```{r}
+temp = meta %>% filter(str_detect(sample, pattern='Donor'))
+temp <- temp %>% filter(!sample %in% c('Donor 48', 'Donor 54') & !is.na(dosage))
+
+temp = temp %>% 
+  group_by(sample, time) %>% mutate(cell_count = n(),
+                                    unique_clone_freq = n_distinct(functional_clone_id, na.rm=T) / cell_count) %>% 
+  ungroup()
+
+
+
+temp = temp %>% 
+  group_by(sample, time) %>% summarise(cell_count = n(),
+                                    unique_clone_freq = n_distinct(functional_clone_id, na.rm=T) / cell_count) %>% 
+  ungroup()
+
+ggplot(temp, aes(x=time, y=unique_clone_freq)) + 
+  geom_line(aes(group=sample)) + 
+  geom_point(aes(color=sample)) +
+  scale_y_continuous(limits=c(0,1))
+
+
+temp = temp %>% group_by(functional_clone_id, sample,
+                         time, updated_expanded) %>%
+  summarise(count=n()) %>%
+  group_by(time, sample) %>%
+  mutate(freq = count/sum(count))
+
+temp
+
+
+
+```
+
+
+```{r}
+
+temp = meta
+
+temp %>% filter(updated_expanded & dosage %in% c('Single', 'None')) %>% 
+  group_by(functional_clone_id) %>% 
+  summarise(multi = n_distinct(dosage)) %>% 
+  filter(multi == 2) %>% pull(functional_clone_id) -> clones_to_check
+
+temp %>% filter(functional_clone_id %in% clones_to_check & dosage=='Single') %>% 
+  group_by(functional_clone_id, seurat_clusters, sample) %>% 
+  summarise(count = n()) %>% 
+  group_by(functional_clone_id, sample) %>% 
+  mutate(freq = count/sum(count)) %>% select(functional_clone_id, seurat_clusters, freq, sample) %>% 
+  pivot_wider(names_from = seurat_clusters, values_from = freq, values_fill = 0) -> check
+
+ggplot(check,aes(x=`2`,y=`6`)) + geom_abline(slope=1, color='#bdbdbd', linetype='dashed') +
+  geom_point() + 
+  ggrepel::geom_text_repel(aes(label=functional_clone_id), min.segment.length = 0, arrow = arrow(type='closed', length=unit(5, 'points'))) + 
+  facet_wrap(~sample)
+
+ggplot(temp[,c('harmonyumap_1','harmonyumap_2', 'seurat_clusters', 'sample')], aes(x=harmonyumap_1, y=harmonyumap_2)) + 
+  geom_point(aes(color=seurat_clusters)) + 
+  geom_point(data=temp %>% filter(functional_clone_id %in% clones_to_check & 
+                                    dosage %in% c('None', 'Single')), aes(fill=dosage, shape=dosage)) + facet_wrap(~functional_clone_id)
+
+```
+
+
+```{r}
+
+
+temp %>% 
+  filter(functional_clone_id %in% clones_to_check & dosage == 'Single') %>% 
+  filter(seurat_clusters %in% c('2', '6')) %>%
+  group_by(functional_clone_id, sample) %>%
+  mutate(total_cells = n()) %>%
+  group_by(functional_clone_id,seurat_clusters, sample) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = seurat_clusters, values_from = count, values_fill = 0) -> chi_data
+
+
+fisher_results <- chi_data %>%
+  rowwise() %>%
+  mutate(
+    total = `2` + `6`,
+    # Fisher's exact test for 2x2 contingency table
+    p_value = ifelse(total > 0,
+                     fisher.test(matrix(c(`2`, `6`, 
+                                         sum(chi_data$`2`) - `2`, 
+                                         sum(chi_data$`6`) - `6`), 
+                                       nrow = 2))$p.value,
+                     NA),
+    # Simpler version: one-sample binomial test
+    binom_p = ifelse(total > 0,
+                     binom.test(`2`, total, p = 0.5)$p.value,
+                     NA)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    p_adj_fisher = p.adjust(p_value, method = 'BH'),
+    p_adj_binom = p.adjust(binom_p, method = 'BH'),
+    prop_cluster_2 = `2` / total,
+    prop_cluster_6 = `6` / total
+  )
+
+# View results
+fisher_results %>%
+  select(functional_clone_id, sample, `2`, `6`, total, 
+         prop_cluster_2, binom_p, p_adj_binom) %>%
+  arrange(p_adj_binom)
+
+# Visualize with effect size consideration
+fisher_results %>%
+  filter(total >= 3) %>%  # Focus on clones with at least 3 cells
+  mutate(
+    bias = case_when(
+      prop_cluster_2 > 0.5 ~ "Cluster 2",
+      prop_cluster_2 < 0.5 ~ "Cluster 6",
+      TRUE ~ "Equal"
+    ),
+    significant = p_adj_binom < 0.05
+  ) %>%
+  ggplot(aes(x = reorder(functional_clone_id, prop_cluster_2), 
+             y = prop_cluster_2)) +
+  geom_hline(yintercept = 0.5, linetype = 'solid', color = '#bdbdbd') +
+  geom_segment(aes(xend = functional_clone_id, y = 0.5, yend = prop_cluster_2,
+                   linetype = significant), alpha = 0.5) +
+    geom_point(aes(fill = significant, size = total, shape=sample)) +
+
+  scale_color_manual(values = c('TRUE' = '#e41a1c', 'FALSE' = '#377eb8')) +
+  coord_flip() +
+  labs(
+    x = 'Clone ID',
+    y = 'Proportion in Cluster 2',
+    color = 'Significant\n(p < 0.05)',
+    size = 'Total cells'
+  ) +
+  theme_minimal() + scale_shape_manual(values = c(21,22,23,24))
+
+
+```
+
+```{r}
+library(tidyverse)
+
+
+temp %>% 
+  filter(functional_clone_id %in% clones_to_check & dosage == 'Single') %>% 
+  filter(seurat_clusters %in% c('2', '6')) %>%
+  group_by(functional_clone_id, sample) %>%
+  mutate(total_cells = n()) %>%
+  group_by(functional_clone_id,seurat_clusters, sample) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = seurat_clusters, values_from = count, values_fill = 0) -> chi_data
+
+# Perform binomial test for each clone
+binomial_results <- chi_data %>%
+  rowwise() %>%
+  mutate(
+    total = `2` + `6`,
+    # Binomial test: is proportion in cluster 2 different from 0.5?
+    binom_p = ifelse(total > 0,
+                     binom.test(`2`, total, p = 0.5)$p.value,
+                     NA),
+    # Calculate proportions
+    prop_cluster_2 = `2` / total,
+    prop_cluster_6 = `6` / total,
+    # Effect size: deviation from 50:50
+    effect_size = prop_cluster_2 - 0.5
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # Adjust p-values for multiple testing
+    p_adj = p.adjust(binom_p, method = 'BH'),
+    # Classify results
+    significant = p_adj < 0.05,
+    bias_direction = case_when(
+      !significant ~ "No bias",
+      prop_cluster_2 > 0.5 ~ "Cluster 2",
+      prop_cluster_2 < 0.5 ~ "Cluster 6",
+      TRUE ~ "Equal"
+    )
+  )
+
+# View results sorted by significance
+binomial_results %>%
+  select(functional_clone_id, sample, `2`, `6`, total,
+         prop_cluster_2, effect_size, binom_p, p_adj, bias_direction) %>%
+  arrange(p_adj)
+
+# Summary of significant clones
+binomial_results %>%
+  filter(significant) %>%
+  select(functional_clone_id, sample, `2`, `6`, bias_direction, p_adj)
+
+
+# Lollipop plot: Proportion in Cluster 2
+binomial_results %>%
+  filter(total > 3) %>%
+  mutate(clone_label = paste0(functional_clone_id, " (n=", total, ")")) %>%
+  ggplot(aes(x = reorder(clone_label, prop_cluster_2), y = prop_cluster_2)) +
+  geom_hline(yintercept = 0.5, color = '#000000', linewidth = 0.5, linetype='dotted') +
+  geom_segment(aes(xend = clone_label, y = 0.5, yend = prop_cluster_2,
+                   linetype = bias_direction), 
+               linewidth = 0.5) +
+  geom_point(aes(fill = significant, size = total, shape=sample)) +
+  scale_color_manual(
+    values = c('Cluster 2' = '#e41a1c', 'Cluster 6' = '#377eb8', 'No bias' = '#999999')
+  ) +
+  scale_linetype_manual(
+    values = c('Cluster 2' = 'solid', 'Cluster 6' = 'solid', 'No bias' = 'dashed')
+  ) +
+  coord_flip() +
+  labs(
+    x = 'Clone ID',
+    y = 'Proportion in Cluster 2',
+    color = 'Bias Direction',
+    linetype = 'Bias Direction',
+    size = 'Total Cells',
+    title = 'Clone Distribution in Cluster 2'
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.y = element_text(size = 8),
+    legend.position = 'right'
+  ) + scale_shape_manual(values = c(21,22,23,24)) + 
+  guides(fill = guide_legend(override.aes = list(shape=21, size=3))) -> p
+  
+ggsave(p, file = 'plots/final/binomial_test_26.pdf', scale=3)
+  
+```
+
